@@ -1,10 +1,9 @@
 package agent_backend;
 
 import java.util.Map;
-
 import org.springframework.stereotype.Service;
 
-@Service 
+@Service
 public class ToolCall {
     private final ToolRegistry toolRegistry;
 
@@ -12,14 +11,17 @@ public class ToolCall {
         this.toolRegistry = toolRegistry;
     }
 
-    public ToolResult callTool(Map<String, Object> arguments){
-        String toolName = (String) arguments.get("toolName");
-        AgentTool tool = toolRegistry.getTool(toolName);
-        if(tool == null){
-            return new ToolResult(toolName,"Tool not found");
+    public ToolResult callTool(String toolName, Map<String, Object> arguments) {
+        try{
+            AgentTool tool = toolRegistry.getTool(toolName);
+            return tool.execute(arguments);
+        } catch (IllegalArgumentException exception) {
+            return new ToolResult(toolName, exception.getMessage());
+        } catch (Exception e) {
+            return new ToolResult(
+                toolName,
+                "Tool execution failed: " + e.getMessage()
+            );
         }
-        return tool.execute(arguments);
     }
-
 }
-

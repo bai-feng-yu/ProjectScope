@@ -1,40 +1,40 @@
 package agent_backend;
 
-
-import org.springframework.stereotype.Service;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
 @Service
 public class AgentRunner {
-
     private final LlmClient llmClient;
     private final ToolCall toolCall;
-        
-    public AgentRunner(LlmClient llmClient, ToolCall toolCall){
+    private final ToolRegistry toolRegistry;
+    private final int maxSteps;
+
+    public AgentRunner(LlmClient llmClient, ToolCall toolCall, ToolRegistry toolRegistry,
+            @Value("${agent.max-steps:10}") int maxSteps) {
         this.llmClient = llmClient;
         this.toolCall = toolCall;
+        this.toolRegistry = toolRegistry;
+        this.maxSteps = maxSteps;
     }
 
+    public AgentState run(String task) {
+        AgentState state = new AgentState(task, toolRegistry.getAllTools());
 
-    public AgentState run (String task){
-        task += " You can find the list of available tools and their descriptions by calling the /tools endpoint."; // TODO: 让模型知道如何获取工具以及相关模板
-        AgentState agentState = new AgentState(task);
-
-        while(true){
-            LlmDecision llmDecision = this.llmClient.decide(agentState);        
-
-            if(llmDecision.getDecisionType()==LlmDecision.DecsionType.TOOL_CALL){
-                Map<String, Object> toolCallArguments = llmDecision.getToolCallArguments();
-                ToolResult toolResult = toolCall.callTool(toolCallArguments);
-                agentState.addStep(new AgentStep(llmDecision, toolResult));//  Update the agentState with the result of the tool call
-            }else if (llmDecision.getDecisionType()==LlmDecision.DecsionType.FINAL_ANSWER){
-                String finalAnswer = llmDecision.getFinalAnswer();
-                System.out.println("Final Answer: " + finalAnswer);
-                break;
+        for (int step = 0; step < maxSteps; step++) {
+            LlmDecision decision = llmClient.decide(state);
+            if (decision.getDecisionType() == LlmDecision.DecsionType.TOOL_CALL) {
+                Map<String, Object> arguments = decision.getToolCallArguments();
+                ToolResult result = toolCall.callTool(decision.getToolName(), arguments);
+                state.addStep(new AgentStep(decision, result));
+            } else {
+                state.complete(decision.getFinalAnswer());
+                return state;
             }
         }
 
-        return agentState;
+        state.fail();
+        throw new IllegalStateException("Agent exceeded maximum steps: " + maxSteps);
     }
-
 }
