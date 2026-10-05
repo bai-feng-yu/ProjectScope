@@ -1,26 +1,29 @@
 package agent_backend;
 
-import java.util.Map;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;
 
 @Service
 public class ToolCall {
     private final ToolRegistry toolRegistry;
+    private final JsonMapper objectMapper;
 
-    public ToolCall(ToolRegistry toolRegistry) {
+    public ToolCall(ToolRegistry toolRegistry, JsonMapper objectMapper) {
         this.toolRegistry = toolRegistry;
+        this.objectMapper = objectMapper;
     }
 
-    public ToolResult callTool(String toolName, Map<String, Object> arguments) {
+    public ToolResult<?> callTool(String toolName, Object arguments) {
         try{
-            AgentTool tool = toolRegistry.getTool(toolName);
-            return tool.execute(arguments);
+            AgentTool<?,?> tool = toolRegistry.getTool(toolName);
+
+            return tool.executeRaw(arguments, objectMapper);
         } catch (IllegalArgumentException exception) {
-            return new ToolResult(toolName, exception.getMessage());
+            return new ToolFailure<>(toolName, "INVALID_ARGUMENT", exception.getMessage());
         } catch (Exception e) {
-            return new ToolResult(
+            return new ToolFailure<>(
                 toolName,
-                "Tool execution failed: " + e.getMessage()
+                "INTERNAL_ERROR"  , e.getMessage()
             );
         }
     }

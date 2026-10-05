@@ -10,18 +10,19 @@ import java.util.Map;
 
 @Component 
 public class ToolRegistry {
-    private final Map<String, AgentTool> tools;
+    private final Map<String, AgentTool<?,?>> tools;
 
-    public ToolRegistry(List<AgentTool> toolList) {
+    public ToolRegistry(List<AgentTool<?,?>> toolList) {
         this.tools = new HashMap<>();
 
-        for (AgentTool tool : toolList) {
+        for (AgentTool<?,?> tool : toolList) {
             this.tools.put(tool.name(), tool);
         }
     }
 
-    public AgentTool getTool(String name) {
-        AgentTool tool = tools.get(name);
+
+    public AgentTool<?,?> getTool(String name) {
+        AgentTool<?,?> tool = tools.get(name);
 
         if (tool == null) {
             throw new IllegalArgumentException("Tool not found: " + name);
@@ -30,7 +31,7 @@ public class ToolRegistry {
         return tool;
     }
 
-    public List<AgentTool> getAllTools() {
+    public List<AgentTool<?,?>> getAllTools() {
         return List.copyOf(tools.values());
     }
 }

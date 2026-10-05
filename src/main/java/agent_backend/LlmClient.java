@@ -77,15 +77,29 @@ public class LlmClient {
                     "type", "function",
                     "function", function);
             messages.add(Map.of("role", "assistant", "tool_calls", List.of(toolCall)));
-            messages.add(Map.of(
-                    "role", "tool",
-                    "tool_call_id", decision.getToolCallId(),
-                    "content", step.getToolResult().getToolOutput()));
+
+            ToolResult<?> toolResult = step.getToolResult();
+            if (toolResult == null) {
+                throw new IllegalStateException("Tool result is null for step: " + step);
+            }else if(toolResult instanceof ToolSuccess<?> success){
+                messages.add(Map.of(
+                        "role", "tool",
+                        "tool_call_id", decision.getToolCallId(),
+                        "content", writeJson(Map.of(
+                                "data", writeJson(success.data())))));
+            }else if(toolResult instanceof ToolFailure<?> failure){
+                messages.add(Map.of(
+                        "role", "tool", 
+                        "tool_call_id", decision.getToolCallId(),
+                        "content", writeJson(Map.of(
+                                "error_code", failure.errorCode(),
+                                "error_message", failure.errorMessage()))));
+            }
         }
         return messages;
     }
 
-    private List<Map<String, Object>> buildTools(List<AgentTool> agentTools) {
+    private List<Map<String, Object>> buildTools(List<AgentTool<?,?>> agentTools) {
         return agentTools.stream().map(tool -> Map.<String, Object>of(
                 "type", "function",
                 "function", Map.of(

@@ -3,9 +3,9 @@ package agent_backend;
 public class AgentStep {
     private LlmDecision decision;
 
-    private ToolResult toolResult;
+    private ToolResult<?> toolResult;
     
-    public AgentStep(LlmDecision decision, ToolResult toolResult){
+    public AgentStep(LlmDecision decision, ToolResult<?> toolResult){
         this.decision = decision;
         this.toolResult = toolResult;
     }
@@ -15,7 +15,7 @@ public class AgentStep {
 
     }
 
-    public ToolResult getToolResult() { 
+    public ToolResult<?> getToolResult() { 
         return toolResult;
     }
 

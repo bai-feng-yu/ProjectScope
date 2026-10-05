@@ -26,7 +26,7 @@ public class AgentRunner {
             LlmDecision decision = llmClient.decide(state);
             if (decision.getDecisionType() == LlmDecision.DecsionType.TOOL_CALL) {
                 Map<String, Object> arguments = decision.getToolCallArguments();
-                ToolResult result = toolCall.callTool(decision.getToolName(), arguments);
+                ToolResult<?> result = toolCall.callTool(decision.getToolName(), arguments);
                 state.addStep(new AgentStep(decision, result));
             } else {
                 state.complete(decision.getFinalAnswer());
