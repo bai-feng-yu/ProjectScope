@@ -3,6 +3,8 @@ package agent_backend;
 import java.util.ArrayList;
 import java.util.List;
 
+import agent_backend.tool.AgentTool;
+
 public class AgentState {
     private final List<AgentStep> steps;
     private final String task;

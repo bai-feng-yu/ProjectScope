@@ -1,5 +1,4 @@
-package agent_backend;
-
+package agent_backend.tool.result;
 
 public record ToolSuccess<O>(
         String toolName,

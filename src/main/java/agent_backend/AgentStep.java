@@ -1,5 +1,7 @@
 package agent_backend;
 
+import agent_backend.tool.result.ToolResult;
+
 public class AgentStep {
     private LlmDecision decision;
 

@@ -1,6 +1,10 @@
-package agent_backend;
+package agent_backend.tool;
 
 import org.springframework.stereotype.Service;
+
+import agent_backend.tool.result.ToolFailure;
+import agent_backend.tool.result.ToolResult;
+import agent_backend.toolRegistry.ToolRegistry;
 import tools.jackson.databind.json.JsonMapper;
 
 @Service

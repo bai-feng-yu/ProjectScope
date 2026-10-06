@@ -1,5 +1,8 @@
-package agent_backend;
+package agent_backend.tool;
 
+import agent_backend.tool.result.ToolFailure;
+import agent_backend.tool.result.ToolResult;
+import agent_backend.tool.result.ToolSuccess;
 import tools.jackson.databind.json.JsonMapper;
 
 public interface AgentTool<I, O> {

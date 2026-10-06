@@ -1,8 +1,9 @@
 
-package agent_backend.tools.calculate;
+package agent_backend.toolRegistry.calculate;
 
-import agent_backend.AgentTool;
 import org.springframework.stereotype.Component;
+
+import agent_backend.tool.AgentTool;
 
 
 @Component
@@ -47,7 +48,7 @@ public class CalculateTool implements AgentTool<CalculateInput, CalculateOutput>
 
         if(operation == null){
             return new CalculateOutput(null);
-        }else if(operation=="multiply"){
+        }else if("multiply".equals(operation)){
 
             Integer result=left*right;
             return new CalculateOutput(result);

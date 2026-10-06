@@ -1,4 +1,4 @@
-package agent_backend;
+package agent_backend.tool.result;
 
 public record ToolFailure<O>(
         String toolName,

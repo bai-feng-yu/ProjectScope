@@ -11,6 +11,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
+import agent_backend.tool.AgentTool;
+import agent_backend.tool.ToolDescriptorFactory;
+import agent_backend.tool.result.ToolFailure;
+import agent_backend.tool.result.ToolResult;
+import agent_backend.tool.result.ToolSuccess;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
@@ -24,14 +29,16 @@ public class LlmClient {
 
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
+    private final ToolDescriptorFactory descriptorFactory;
     private final String apiKey;
     private final String model;
 
-    public LlmClient(ObjectMapper objectMapper,
+    public LlmClient(ObjectMapper objectMapper, ToolDescriptorFactory descriptorFactory,
             @Value("${llm.api-key:}") String apiKey,
             @Value("${llm.base-url:https://api.openai.com/v1}") String baseUrl,
             @Value("${llm.model:}") String model) {
         this.objectMapper = objectMapper;
+        this.descriptorFactory = descriptorFactory;
         this.apiKey = apiKey;
         this.model = model;
         this.restClient = RestClient.create(baseUrl);
@@ -86,7 +93,7 @@ public class LlmClient {
                         "role", "tool",
                         "tool_call_id", decision.getToolCallId(),
                         "content", writeJson(Map.of(
-                                "data", writeJson(success.data())))));
+                                "data", success.data()))));
             }else if(toolResult instanceof ToolFailure<?> failure){
                 messages.add(Map.of(
                         "role", "tool", 
@@ -105,10 +112,7 @@ public class LlmClient {
                 "function", Map.of(
                         "name", tool.name(),
                         "description", tool.description(),
-                        "parameters", Map.of(
-                                "type", "object",
-                                "properties", Map.of(),
-                                "additionalProperties", true))))
+                        "parameters", descriptorFactory.create(tool).inputSchema())))
                 .toList();
     }
 

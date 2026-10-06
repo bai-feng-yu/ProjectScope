@@ -4,6 +4,10 @@ import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import agent_backend.tool.ToolCall;
+import agent_backend.tool.result.ToolResult;
+import agent_backend.toolRegistry.ToolRegistry;
+
 @Service
 public class AgentRunner {
     private final LlmClient llmClient;

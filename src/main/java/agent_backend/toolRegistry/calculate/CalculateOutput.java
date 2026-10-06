@@ -1,4 +1,4 @@
-package agent_backend.tools.calculate;
+package agent_backend.toolRegistry.calculate;
 
 public record CalculateOutput(
 
