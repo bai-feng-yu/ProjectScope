@@ -124,11 +124,27 @@ public class LlmClient {
             throw new IllegalStateException("LLM response has no choices: " + response);
         }
 
-        Map<String, Object> message = (Map<String, Object>) choices.getFirst().get("message");
+        Map<String, Object> choice = choices.getFirst();
+        Object finishReason = choice.get("finish_reason");
+        // Check the entire turn before parsing any potentially incomplete arguments.
+        if ("length".equals(finishReason)) {
+            throw new IllegalStateException("LLM response was truncated (finish_reason=length); no tools executed");
+        }
+        if (!"tool_calls".equals(finishReason) && !"stop".equals(finishReason)) {
+            throw new IllegalStateException("LLM response has no supported completion signal: " + finishReason);
+        }
+
+        Map<String, Object> message = (Map<String, Object>) choice.get("message");
+        if (message == null) {
+            throw new IllegalStateException("LLM response has no message");
+        }
         List<Map<String, Object>> toolCalls =
                 (List<Map<String, Object>>) message.get("tool_calls");
 
         if (toolCalls != null && !toolCalls.isEmpty()) {
+            if (!"tool_calls".equals(finishReason)) {
+                throw new IllegalStateException("LLM returned tool calls without finish_reason=tool_calls");
+            }
             List<ToolInvocation> calls = new ArrayList<>();
             for (Map<String, Object> toolCall : toolCalls) {
                 if (!(toolCall.get("id") instanceof String id) || id.isBlank()) {
@@ -142,6 +158,9 @@ public class LlmClient {
             return LlmDecision.toolCalls(calls, content == null ? null : content.toString());
         }
 
+        if ("tool_calls".equals(finishReason)) {
+            throw new IllegalStateException("LLM finished with tool_calls but returned no calls");
+        }
         Object content = message.get("content");
         if (content == null) {
             throw new IllegalStateException("LLM returned neither text nor a tool call: " + response);
