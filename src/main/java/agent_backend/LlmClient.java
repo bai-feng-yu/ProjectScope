@@ -91,13 +91,13 @@ public class LlmClient {
             }else if(toolResult instanceof ToolSuccess<?> success){
                 messages.add(Map.of(
                         "role", "tool",
-                        "tool_call_id", decision.getToolCallId(),
+                        "tool_call_id", success.toolCallId(),
                         "content", writeJson(Map.of(
                                 "data", success.data()))));
             }else if(toolResult instanceof ToolFailure<?> failure){
                 messages.add(Map.of(
                         "role", "tool", 
-                        "tool_call_id", decision.getToolCallId(),
+                        "tool_call_id", failure.toolCallId(),
                         "content", writeJson(Map.of(
                                 "error_code", failure.errorCode(),
                                 "error_message", failure.errorMessage()))));
@@ -133,11 +133,14 @@ public class LlmClient {
 
         if (toolCalls != null && !toolCalls.isEmpty()) {
             Map<String, Object> toolCall = toolCalls.getFirst();
+            if (!(toolCall.get("id") instanceof String id) || id.isBlank()) {
+                throw new IllegalStateException("LLM tool call is missing a non-blank id");
+            }
             Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
             String argumentsJson = (String) function.getOrDefault("arguments", "{}");
             Map<String, Object> arguments = readArguments(argumentsJson);
             return LlmDecision.toolCall(
-                    (String) toolCall.get("id"),
+                    id,
                     (String) function.get("name"),
                     arguments);
         }

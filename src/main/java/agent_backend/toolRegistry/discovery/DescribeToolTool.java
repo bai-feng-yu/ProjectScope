@@ -4,6 +4,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import agent_backend.tool.AgentTool;
+import agent_backend.tool.InvalidToolArgumentException;
 import agent_backend.tool.ToolDescriptor;
 import agent_backend.toolRegistry.ToolRegistry;
 
@@ -30,7 +31,7 @@ public class DescribeToolTool implements AgentTool<DescribeToolInput, ToolDescri
     @Override
     public ToolDescriptor execute(DescribeToolInput input) {
         if (input == null || input.name() == null || input.name().isBlank()) {
-            throw new IllegalArgumentException("name must not be blank");
+            throw new InvalidToolArgumentException("name must not be blank");
         }
         return registry.getObject().describe(input.name());
     }

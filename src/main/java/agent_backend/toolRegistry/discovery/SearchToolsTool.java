@@ -6,6 +6,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import agent_backend.tool.AgentTool;
+import agent_backend.tool.InvalidToolArgumentException;
 import agent_backend.toolRegistry.ToolRegistry;
 
 @Component
@@ -28,7 +29,7 @@ public class SearchToolsTool implements AgentTool<SearchToolsInput, SearchToolsO
     @Override
     public SearchToolsOutput execute(SearchToolsInput input) {
         if (input == null || input.query() == null || input.query().isBlank()) {
-            throw new IllegalArgumentException("query must not be blank");
+            throw new InvalidToolArgumentException("query must not be blank");
         }
         return new SearchToolsOutput(registry.getObject().search(input.query()).stream()
                 .map(descriptor -> new ToolSummary(descriptor.name(), descriptor.description()))

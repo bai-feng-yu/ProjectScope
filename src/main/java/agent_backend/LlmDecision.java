@@ -1,6 +1,7 @@
 package agent_backend;
 
 import java.util.Map;
+import org.springframework.util.Assert;
 
 public class LlmDecision {
     private final DecsionType decisionType;
@@ -22,6 +23,7 @@ public class LlmDecision {
 
     public static LlmDecision toolCall(String toolCallId, String toolName,
             Map<String, Object> arguments) {
+        Assert.hasText(toolCallId, "toolCallId must not be blank");
         return new LlmDecision(DecsionType.TOOL_CALL, toolCallId, toolName, arguments, null);
     }
 
