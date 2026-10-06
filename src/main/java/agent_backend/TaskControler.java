@@ -15,11 +15,11 @@ public class TaskControler {
     }
 
     @PostMapping 
-    public String tasks(@RequestBody ChatRequest request){
+    public AgentRunResult tasks(@RequestBody ChatRequest request){
 
         String task = request.getTask();
         AgentState agentState = agentRunner.run(task);
-        return agentState.getFinalAnswer();
+        return AgentRunResult.from(agentState);
     }
     
 }

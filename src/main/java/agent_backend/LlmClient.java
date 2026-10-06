@@ -12,6 +12,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestClient;
 
 import agent_backend.tool.AgentTool;
+import agent_backend.tool.ToolInvocation;
 import agent_backend.tool.ToolDescriptorFactory;
 import agent_backend.tool.result.ToolFailure;
 import agent_backend.tool.result.ToolResult;
@@ -76,31 +77,27 @@ public class LlmClient {
 
         for (AgentStep step : state.getSteps()) {
             LlmDecision decision = step.getDecision();
-            Map<String, Object> function = Map.of(
-                    "name", decision.getToolName(),
-                    "arguments", writeJson(decision.getToolCallArguments()));
-            Map<String, Object> toolCall = Map.of(
-                    "id", decision.getToolCallId(),
-                    "type", "function",
-                    "function", function);
-            messages.add(Map.of("role", "assistant", "tool_calls", List.of(toolCall)));
+            var calls = decision.getToolCalls().stream().map(call -> Map.<String, Object>of(
+                    "id", call.toolCallId(), "type", "function",
+                    "function", Map.of("name", call.toolName(),
+                            "arguments", writeJson(call.arguments())))).toList();
+            Map<String, Object> assistant = new LinkedHashMap<>();
+            assistant.put("role", "assistant");
+            assistant.put("content", decision.getContent());
+            assistant.put("tool_calls", calls);
+            messages.add(assistant);
 
-            ToolResult<?> toolResult = step.getToolResult();
-            if (toolResult == null) {
-                throw new IllegalStateException("Tool result is null for step: " + step);
-            }else if(toolResult instanceof ToolSuccess<?> success){
-                messages.add(Map.of(
-                        "role", "tool",
-                        "tool_call_id", success.toolCallId(),
-                        "content", writeJson(Map.of(
-                                "data", success.data()))));
-            }else if(toolResult instanceof ToolFailure<?> failure){
-                messages.add(Map.of(
-                        "role", "tool", 
-                        "tool_call_id", failure.toolCallId(),
-                        "content", writeJson(Map.of(
-                                "error_code", failure.errorCode(),
-                                "error_message", failure.errorMessage()))));
+            for (ToolResult<?> toolResult : step.getToolResults()) {
+                if (toolResult instanceof ToolSuccess<?> success) {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("data", success.data());
+                    messages.add(Map.of("role", "tool", "tool_call_id", success.toolCallId(),
+                            "content", writeJson(payload)));
+                } else if (toolResult instanceof ToolFailure<?> failure) {
+                    messages.add(Map.of("role", "tool", "tool_call_id", failure.toolCallId(),
+                            "content", writeJson(Map.of("error_code", failure.errorCode(),
+                                    "error_message", failure.errorMessage()))));
+                }
             }
         }
         return messages;
@@ -132,17 +129,17 @@ public class LlmClient {
                 (List<Map<String, Object>>) message.get("tool_calls");
 
         if (toolCalls != null && !toolCalls.isEmpty()) {
-            Map<String, Object> toolCall = toolCalls.getFirst();
-            if (!(toolCall.get("id") instanceof String id) || id.isBlank()) {
-                throw new IllegalStateException("LLM tool call is missing a non-blank id");
+            List<ToolInvocation> calls = new ArrayList<>();
+            for (Map<String, Object> toolCall : toolCalls) {
+                if (!(toolCall.get("id") instanceof String id) || id.isBlank()) {
+                    throw new IllegalStateException("LLM tool call is missing a non-blank id");
+                }
+                Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
+                String argumentsJson = (String) function.getOrDefault("arguments", "{}");
+                calls.add(new ToolInvocation(id, (String) function.get("name"), readArguments(argumentsJson)));
             }
-            Map<String, Object> function = (Map<String, Object>) toolCall.get("function");
-            String argumentsJson = (String) function.getOrDefault("arguments", "{}");
-            Map<String, Object> arguments = readArguments(argumentsJson);
-            return LlmDecision.toolCall(
-                    id,
-                    (String) function.get("name"),
-                    arguments);
+            Object content = message.get("content");
+            return LlmDecision.toolCalls(calls, content == null ? null : content.toString());
         }
 
         Object content = message.get("content");
