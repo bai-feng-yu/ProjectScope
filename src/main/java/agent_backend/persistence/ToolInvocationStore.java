@@ -7,10 +7,10 @@ import agent_backend.tool.result.ToolResult;
 
 public interface ToolInvocationStore {
     /** Atomically inserts the entire batch; returns internal invocation IDs in call order. */
-    List<String> createBatch(String stepId, List<ToolInvocation> calls);
-    void start(String invocationId);
-    void finish(String invocationId, ToolResult<?> result);
+    List<String> createBatch(TaskLease lease, String stepId, List<ToolInvocation> calls);
+    void start(TaskLease lease, String invocationId);
+    void finish(TaskLease lease, String invocationId, ToolResult<?> result);
     /** Keeps saved results; marks RUNNING as UNKNOWN and unstarted PENDING as FAILED. */
-    void abortUnfinished(String stepId, String reason);
+    void abortUnfinished(TaskLease lease, String stepId, String reason);
     List<ToolInvocationRecord> findByStep(String stepId);
 }

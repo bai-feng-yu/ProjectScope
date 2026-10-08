@@ -62,14 +62,14 @@ class TaskApiTests {
         String id = UUID.randomUUID().toString();
         var time = LocalDateTime.of(2026, 10, 8, 1, 2, 3);
         when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.COMPLETED,
-                "done", null, time, time, time, time)));
+                "done", null, time, time, time, time, null, null, null)));
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.taskId").value(id))
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.finalAnswer").value("done"))
                 .andExpect(jsonPath("$.createdAt").value("2026-10-08T01:02:03Z"));
         when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.FAILED,
-                null, "model failed", time, time, time, time)));
+                null, "model failed", time, time, time, time, null, null, null)));
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("FAILED"))
                 .andExpect(jsonPath("$.failureReason").value("model failed"));
@@ -79,7 +79,7 @@ class TaskApiTests {
     void stepsExposePartialPersistedResultsAsJsonObjects() throws Exception {
         String id = UUID.randomUUID().toString();
         when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.RUNNING,
-                null, null, null, null, null, null)));
+                null, null, null, null, null, null, null, null, null)));
         when(steps.findByTask(id)).thenReturn(List.of(new StepRecord("step", id, 1, StepStatus.RUNNING,
                 "{\"choices\":[]}", null, null, null, null)));
         when(invocations.findByStep("step")).thenReturn(List.of(
@@ -103,7 +103,7 @@ class TaskApiTests {
         mvc.perform(get("/tasks/{id}/steps", id)).andExpect(status().isNotFound());
         mvc.perform(get("/tasks/not-a-uuid")).andExpect(status().isBadRequest());
         when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.PENDING,
-                null, null, null, null, null, null)));
+                null, null, null, null, null, null, null, null, null)));
         mvc.perform(get("/tasks/{id}/steps", id)).andExpect(status().isOk())
                 .andExpect(content().json("[]"));
     }

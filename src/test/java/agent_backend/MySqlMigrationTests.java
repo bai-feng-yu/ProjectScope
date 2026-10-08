@@ -7,6 +7,8 @@ import java.util.UUID;
 import java.util.List;
 import java.util.Map;
 import agent_backend.persistence.TaskStore;
+import agent_backend.persistence.TaskLease;
+import agent_backend.task.TaskLeaseManager;
 import agent_backend.persistence.StepStore;
 import agent_backend.persistence.ToolInvocationStore;
 import agent_backend.persistence.model.TaskStatus;
@@ -58,6 +60,7 @@ class MySqlMigrationTests {
     @Autowired Flyway flyway;
     @Autowired JdbcTemplate jdbc;
     @Autowired TaskStore tasks;
+    @Autowired TaskLeaseManager leases;
     @Autowired StepStore steps;
     @Autowired ToolInvocationStore invocations;
     @Autowired LlmClient client;
@@ -65,7 +68,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("1", flyway.info().current().getVersion().getVersion());
+        assertEquals("2", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()
@@ -128,28 +131,28 @@ class MySqlMigrationTests {
     void storesEnforceTerminalStatesAndMapRecords() {
         String taskId = id();
         tasks.create(taskId, "task");
-        tasks.start(taskId);
-        assertThrows(IllegalStateException.class, () -> tasks.start(taskId));
+        tasks.start(lease(taskId), 60000);
+        assertThrows(IllegalStateException.class, () -> tasks.start(lease(taskId), 60000));
         String stepId = id();
-        steps.create(stepId, taskId, 1);
-        steps.saveResponse(stepId, Map.of("finish_reason", "tool_calls"));
-        String callId = invocations.createBatch(stepId,
+        steps.create(lease(taskId), stepId, 1);
+        steps.saveResponse(lease(taskId), stepId, Map.of("finish_reason", "tool_calls"));
+        String callId = invocations.createBatch(lease(taskId), stepId,
                 List.of(new ToolInvocation("call-1", "test_tool", Map.of()))).getFirst();
-        invocations.start(callId);
-        assertThrows(IllegalStateException.class, () -> invocations.start(callId));
-        assertThrows(IllegalStateException.class, () -> steps.complete(stepId));
-        assertThrows(IllegalStateException.class, () -> invocations.finish(callId,
+        invocations.start(lease(taskId), callId);
+        assertThrows(IllegalStateException.class, () -> invocations.start(lease(taskId), callId));
+        assertThrows(IllegalStateException.class, () -> steps.complete(lease(taskId), stepId));
+        assertThrows(IllegalStateException.class, () -> invocations.finish(lease(taskId), callId,
                 new ToolSuccess<>("wrong-id", "test_tool", "ok")));
-        invocations.finish(callId, new ToolSuccess<>("call-1", "test_tool", "ok"));
-        assertThrows(IllegalStateException.class, () -> invocations.finish(callId,
+        invocations.finish(lease(taskId), callId, new ToolSuccess<>("call-1", "test_tool", "ok"));
+        assertThrows(IllegalStateException.class, () -> invocations.finish(lease(taskId), callId,
                 new ToolFailure<>("call-1", "test_tool", "LATE", "late overwrite")));
-        steps.complete(stepId);
-        assertThrows(IllegalStateException.class, () -> steps.saveResponse(stepId, Map.of()));
-        assertThrows(IllegalStateException.class, () -> steps.fail(stepId, "late"));
-        tasks.complete(taskId, "answer");
-        assertThrows(IllegalStateException.class, () -> tasks.fail(taskId, "late"));
-        assertThrows(IllegalStateException.class, () -> tasks.complete(taskId, "overwrite"));
-        assertThrows(IllegalStateException.class, () -> steps.create(id(), taskId, 2));
+        steps.complete(lease(taskId), stepId);
+        assertThrows(IllegalStateException.class, () -> steps.saveResponse(lease(taskId), stepId, Map.of()));
+        assertThrows(IllegalStateException.class, () -> steps.fail(lease(taskId), stepId, "late"));
+        tasks.complete(lease(taskId), "answer");
+        assertThrows(IllegalStateException.class, () -> tasks.fail(lease(taskId), "late"));
+        assertThrows(IllegalStateException.class, () -> tasks.complete(lease(taskId), "overwrite"));
+        assertThrows(IllegalStateException.class, () -> steps.create(lease(taskId), id(), 2));
         assertEquals(TaskStatus.COMPLETED, tasks.find(taskId).orElseThrow().status());
         assertEquals("answer", tasks.find(taskId).orElseThrow().finalAnswer());
         assertEquals(StepStatus.COMPLETED, steps.findByTask(taskId).getFirst().status());
@@ -160,12 +163,12 @@ class MySqlMigrationTests {
     void wholeBatchRollsBackWhenALaterInsertFails() {
         String taskId = id();
         tasks.create(taskId, "task");
-        tasks.start(taskId);
+        tasks.start(lease(taskId), 60000);
         String stepId = id();
-        steps.create(stepId, taskId, 1);
+        steps.create(lease(taskId), stepId, 1);
         var call = new ToolInvocation("duplicate", "test_tool", Map.of());
         assertThrows(DataIntegrityViolationException.class,
-                () -> invocations.createBatch(stepId, List.of(call, call)));
+                () -> invocations.createBatch(lease(taskId), stepId, List.of(call, call)));
         assertTrue(invocations.findByStep(stepId).isEmpty());
     }
 
@@ -277,8 +280,8 @@ class MySqlMigrationTests {
         jdbc.update("UPDATE agent_task SET created_at = '2000-01-01 00:00:00' WHERE task_id = ?", first);
         jdbc.update("UPDATE agent_task SET created_at = '2000-01-02 00:00:00' WHERE task_id = ?", second);
         jdbc.update("UPDATE agent_task SET created_at = '1999-01-01 00:00:00' WHERE task_id IN (?, ?)", running, failed);
-        tasks.start(running);
-        tasks.fail(failed, "failed");
+        tasks.start(lease(running), 60000);
+        tasks.failPending(failed, "failed");
         assertEquals(List.of(first, second), tasks.findPending(2));
         assertEquals(List.of(first), tasks.findPending(1));
         assertThrows(IllegalArgumentException.class, () -> tasks.findPending(0));
@@ -295,7 +298,7 @@ class MySqlMigrationTests {
                 ready.countDown();
                 assertTrue(start.await(5, java.util.concurrent.TimeUnit.SECONDS));
                 try {
-                    tasks.start(taskId);
+                    tasks.start(lease(taskId), 60000);
                     return true;
                 } catch (IllegalStateException alreadyClaimed) {
                     return false;
@@ -311,9 +314,100 @@ class MySqlMigrationTests {
         assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
     }
 
+
+    @Test
+    void expiredLeaseRecoveryPreservesSavedResultsAndFencesEveryLateWriter() {
+        String taskId = id();
+        var owner = lease(taskId);
+        tasks.create(taskId, "task");
+        tasks.start(owner, 60000);
+        String stepId = id();
+        steps.create(owner, stepId, 1);
+        steps.saveResponse(owner, stepId, Map.of("response", "saved"));
+        var ids = invocations.createBatch(owner, stepId, List.of(
+                new ToolInvocation("one", "test", Map.of()),
+                new ToolInvocation("two", "test", Map.of()),
+                new ToolInvocation("three", "test", Map.of())));
+        invocations.start(owner, ids.get(0));
+        invocations.finish(owner, ids.get(0), new ToolSuccess<>("one", "test", "saved"));
+        invocations.start(owner, ids.get(1));
+        jdbc.update("UPDATE agent_task SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE task_id = ?", taskId);
+        assertFalse(tasks.renew(owner, 60000));
+        assertThrows(agent_backend.persistence.LeaseLostException.class,
+                () -> invocations.finish(owner, ids.get(1), new ToolSuccess<>("two", "test", "late")));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> invocations.start(owner, ids.get(2)));
+        assertTrue(tasks.findExpired(1000).contains(taskId));
+        assertTrue(tasks.recoverExpired(taskId));
+        assertFalse(tasks.recoverExpired(taskId));
+        assertEquals(TaskStatus.FAILED, tasks.find(taskId).orElseThrow().status());
+        assertTrue(tasks.find(taskId).orElseThrow().failureReason().contains("lease expired"));
+        assertEquals(StepStatus.FAILED, steps.findByTask(taskId).getFirst().status());
+        var calls = invocations.findByStep(stepId);
+        assertEquals(List.of(ToolCallStatus.SUCCEEDED, ToolCallStatus.UNKNOWN, ToolCallStatus.FAILED),
+                calls.stream().map(call -> call.status()).toList());
+        assertTrue(calls.getFirst().result().contains("saved"));
+        assertNull(calls.get(1).result());
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> steps.saveResponse(owner, stepId, Map.of()));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.complete(owner, "late answer"));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.fail(owner, "overwrite"));
+    }
+
+    @Test
+    void liveLeaseCanRenewButForeignOwnerCannotWriteOrRecover() {
+        String taskId = id();
+        var owner = lease(taskId);
+        var foreign = new TaskLease(taskId, id());
+        tasks.create(taskId, "task");
+        tasks.start(owner, 60000);
+        assertTrue(tasks.renew(owner, 60000));
+        assertFalse(tasks.renew(foreign, 60000));
+        assertFalse(tasks.recoverExpired(taskId));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> steps.create(foreign, id(), 1));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.fail(foreign, "wrong worker"));
+        var saved = tasks.find(taskId).orElseThrow();
+        assertEquals(owner.workerId(), saved.workerId());
+        assertTrue(saved.leaseUntil().isAfter(saved.heartbeatAt()));
+    }
+
+    @Test
+    void recoveryRollsBackAllChangesIfTaskFinalizationFails() {
+        String taskId = id();
+        var owner = lease(taskId);
+        tasks.create(taskId, "task");
+        tasks.start(owner, 60000);
+        String stepId = id();
+        steps.create(owner, stepId, 1);
+        String callId = invocations.createBatch(owner, stepId,
+                List.of(new ToolInvocation("call", "test", Map.of()))).getFirst();
+        invocations.start(owner, callId);
+        jdbc.update("UPDATE agent_task SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE task_id = ?", taskId);
+        jdbc.execute("CREATE TRIGGER reject_recovery BEFORE UPDATE ON agent_task FOR EACH ROW BEGIN "
+                + "IF NEW.task_id = '" + taskId + "' AND NEW.status = 'FAILED' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced failure'; END IF; END");
+        try {
+            assertThrows(org.springframework.dao.DataAccessException.class, () -> tasks.recoverExpired(taskId));
+            assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
+            assertEquals(StepStatus.RUNNING, steps.findByTask(taskId).getFirst().status());
+            assertEquals(ToolCallStatus.RUNNING, invocations.findByStep(stepId).getFirst().status());
+        } finally {
+            jdbc.execute("DROP TRIGGER reject_recovery");
+        }
+        assertTrue(tasks.recoverExpired(taskId));
+    }
+
+    @Test
+    void oldRunningRowsWithoutLeaseAreRecoveredButPendingRowsAreUntouched() {
+        String old = createTask();
+        String pending = createTask();
+        jdbc.update("UPDATE agent_task SET status = 'RUNNING' WHERE task_id = ?", old);
+        assertTrue(tasks.recoverExpired(old));
+        assertFalse(tasks.recoverExpired(pending));
+        assertEquals(TaskStatus.PENDING, tasks.find(pending).orElseThrow().status());
+    }
+
     private AgentRunner runner(LlmClient llm, ToolCall tools, int limit) {
         return new AgentRunner(llm, new SequentialToolBatchExecutor(tools, invocations), registry,
-                tasks, steps, invocations, limit);
+                tasks, steps, invocations, leases, limit);
     }
 
     private Map<String, Object> toolResponse(int count) {
@@ -351,5 +445,8 @@ class MySqlMigrationTests {
 
     private static String id() {
         return UUID.randomUUID().toString();
+    }
+    private TaskLease lease(String taskId) {
+        return new TaskLease(taskId, "11111111-1111-1111-1111-111111111111");
     }
 }

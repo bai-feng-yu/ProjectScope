@@ -7,5 +7,6 @@ public record TaskRecord(
         String taskId, String taskInput, TaskStatus status,
         String finalAnswer, String failureReason,
         LocalDateTime createdAt, LocalDateTime startedAt,
-        LocalDateTime finishedAt, LocalDateTime updatedAt) {
+        LocalDateTime finishedAt, LocalDateTime updatedAt,
+        String workerId, LocalDateTime heartbeatAt, LocalDateTime leaseUntil) {
 }

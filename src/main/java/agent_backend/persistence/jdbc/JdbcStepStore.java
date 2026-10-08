@@ -7,52 +7,64 @@ import org.springframework.stereotype.Repository;
 import org.springframework.util.Assert;
 import tools.jackson.databind.ObjectMapper;
 import agent_backend.persistence.StepStore;
+import agent_backend.persistence.TaskLease;
+import org.springframework.transaction.annotation.Transactional;
 import agent_backend.persistence.model.StepRecord;
 
 @Repository
 public class JdbcStepStore implements StepStore {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
+    private final JdbcLeaseGuard leases;
 
-    public JdbcStepStore(JdbcTemplate jdbc, ObjectMapper mapper) {
+    public JdbcStepStore(JdbcTemplate jdbc, ObjectMapper mapper, JdbcLeaseGuard leases) {
         this.jdbc = jdbc;
         this.mapper = mapper;
+        this.leases = leases;
     }
 
     @Override
-    public void create(String stepId, String taskId, int number) {
+    @Transactional
+    public void create(TaskLease lease, String stepId, int number) {
+        leases.lock(lease);
         JdbcStoreSupport.requireOne(jdbc.update("""
                 INSERT INTO agent_step (step_id, task_id, step_number)
                 SELECT ?, task_id, ? FROM agent_task WHERE task_id = ? AND status = 'RUNNING'
-                """, stepId, number, taskId), "create step", stepId);
+                """, stepId, number, lease.taskId()), "create step", stepId);
     }
 
     @Override
-    public void saveResponse(String stepId, Object response) {
+    @Transactional
+    public void saveResponse(TaskLease lease, String stepId, Object response) {
         Assert.notNull(response, "LLM returned an empty response");
+        leases.lock(lease);
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_step SET model_response = ?
-                WHERE step_id = ? AND status = 'RUNNING' AND model_response IS NULL
-                """, mapper.writeValueAsString(response), stepId), "save model response", stepId);
+                WHERE step_id = ? AND task_id = ? AND status = 'RUNNING' AND model_response IS NULL
+                """, mapper.writeValueAsString(response), stepId, lease.taskId()), "save model response", stepId);
     }
 
     @Override
-    public void complete(String stepId) {
+    @Transactional
+    public void complete(TaskLease lease, String stepId) {
+        leases.lock(lease);
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_step SET status = 'COMPLETED', finished_at = UTC_TIMESTAMP(6)
-                WHERE step_id = ? AND status = 'RUNNING' AND model_response IS NOT NULL
+                WHERE step_id = ? AND task_id = ? AND status = 'RUNNING' AND model_response IS NOT NULL
                   AND NOT EXISTS (SELECT 1 FROM agent_tool_call
                       WHERE step_id = ? AND status IN ('PENDING', 'RUNNING', 'UNKNOWN'))
-                """, stepId, stepId), "complete step", stepId);
+                """, stepId, lease.taskId(), stepId), "complete step", stepId);
     }
 
     @Override
-    public void fail(String stepId, String reason) {
+    @Transactional
+    public void fail(TaskLease lease, String stepId, String reason) {
         Assert.hasText(reason, "failure reason must not be blank");
+        leases.lock(lease);
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_step SET status = 'FAILED', failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
-                WHERE step_id = ? AND status = 'RUNNING'
-                """, reason, stepId), "fail step", stepId);
+                WHERE step_id = ? AND task_id = ? AND status = 'RUNNING'
+                """, reason, stepId, lease.taskId()), "fail step", stepId);
     }
 
     @Override

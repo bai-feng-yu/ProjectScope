@@ -19,17 +19,23 @@ public class SequentialToolBatchExecutor implements ToolBatchExecutor {
 
     @Override
     public List<ToolResult<?>> execute(ToolExecutionContext context, List<ToolInvocation> calls) {
-        List<String> ids = store.createBatch(context.stepId(), calls);
+        var session = context.leaseSession();
+        var lease = session.lease();
+        session.check();
+        List<String> ids = store.createBatch(lease, context.stepId(), calls);
         Assert.state(ids.size() == calls.size(), "Persisted batch size does not match tool calls");
         List<ToolResult<?>> results = new ArrayList<>();
         for (int i = 0; i < calls.size(); i++) {
             ToolInvocation call = calls.get(i);
-            store.start(ids.get(i));
+            session.check();
+            store.start(lease, ids.get(i));
+            session.check();
             ToolResult<?> result = toolCall.callTool(call.toolCallId(), call.toolName(), call.arguments());
             Assert.state(result != null && call.toolCallId().equals(result.toolCallId()),
                     "Tool result ID must match its call");
             // Commit each result before executing the next call. Never retry a side effect here.
-            store.finish(ids.get(i), result);
+            session.check();
+            store.finish(lease, ids.get(i), result);
             results.add(result);
         }
         return List.copyOf(results);

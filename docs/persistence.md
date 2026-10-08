@@ -1,9 +1,9 @@
-# MySQL 持久化与任务接口：阶段 1–4
+# MySQL 持久化与任务接口：阶段 1–5
 
 已提供数据源、Flyway 自动迁移、三张表及对应的只读 Java record/状态枚举。
 阶段 2 已将 Runner 接入 MySQL。阶段 3 将 HTTP 接口拆为提交、详情查询和步骤查询。
 阶段 4 使用 MySQL 保存待执行任务，按本机空闲容量轮询调度；数据库同时记录工具轮次、
-失败轮次和最终回答轮次。运行中任务的崩溃恢复留到阶段 5。
+失败轮次和最终回答轮次。阶段 5 增加租约、心跳和运行中断收尾。
 
 ## 启动配置
 
@@ -63,7 +63,7 @@ DATETIME(6) 和 Java LocalDateTime 均按 UTC 解释。连接参数强制 MySQL 
 Store 通过带预期旧状态的条件 UPDATE 限制转换，检查影响行数；
 终态禁止继续修改。Java record 是数据库快照，不提供执行或状态转换逻辑。
 AgentState 保留运行时状态；TaskStore 另外记录创建后的 PENDING 状态。
-Worker 身份、心跳、租约及相应索引留到阶段 5 以新迁移增加。
+V2 迁移新增 worker_id、heartbeat_at、lease_until 及过期扫描索引。
 
 ## 验证
 
@@ -111,7 +111,7 @@ UNKNOWN 不会自动重试。后续工具异常不会撤销此前已提交的工
 创建 Task 本身失败时不会请求模型。内部同步 run 返回的 taskId 可能没有对应数据库记录；
 HTTP 提交接口在这种情况下返回 503，不返回接收成功响应。
 结果提交后连接断开等情况也可能造成客户端无法确认提交结果，不进行自动重试。
-进程崩溃后的 RUNNING 扫描仍属于阶段 5，不在此阶段自动恢复。
+进程崩溃后的 RUNNING 由租约过期扫描收尾，不自动重跑。
 
 MySqlMigrationTests 另外覆盖 Store 的终态保护、批次插入回滚、完整运行、部分执行失败、
 原始截断响应保存以及步数耗尽。无 Docker 时这些检查会跳过；单元测试仍验证写入顺序、
@@ -187,10 +187,52 @@ Runner 的同步 run(task) 保留供内部调用，HTTP 不使用该路径。
 
 阶段 3 的 `AGENT_EXECUTOR_QUEUE_CAPACITY` 已移除，数据库承担待执行队列。
 应用重新启动后会自动扫描此前的 PENDING，不需要重新提交 HTTP 请求。
-RUNNING 不在扫描范围内，执行中崩溃遗留的任务仍由阶段 5 的租约恢复处理，当前不自动重跑。
+RUNNING 不在待执行扫描范围内，执行中崩溃遗留的任务由租约恢复处理，不自动重跑。
 这些限制针对后台调度；直接在业务代码中调用同步 Runner 不受调度器名额控制。
 
 TaskApiTests 验证 HTTP 契约、输入校验、数据库查询、错误响应；LocalTaskDispatcherTests
 验证名额、重复候选抑制及拒绝后重试。PendingTaskSchedulerTests 验证容量限制和轮询恢复。
 MySqlMigrationTests 验证待执行查询与并发领取；TaskApiMySqlTests 验证完整提交、调度、查询链路，
 以及不经 HTTP 提交的历史 PENDING 也会被领取。真实 MySQL 测试在无 Docker 时明确跳过。
+
+## 阶段 5：心跳、租约与中断恢复
+
+每次领取生成新的 UUID 执行者标识，`TaskLease(taskId, workerId)` 随执行链显式传递。
+领取时以 MySQL UTC 时间设置 heartbeat_at 和 lease_until；心跳在独立线程池运行，
+模型请求或工具执行耗时较长时也能续租。正常返回或异常退出时取消心跳。
+
+续租只允许 RUNNING、执行者匹配且租约仍有效的任务；已过期租约不能被旧执行者重新激活。
+续租被拒绝或心跳写库发生异常时，本地 LeaseSession 标记失效，后续检查停止推进任务。
+心跳表示执行者仍存活，不是模型/工具超时机制；当前不会仅因任务耗时长就判定中断。
+
+所有运行中 Task/Step/Call 写入都要求显式 TaskLease，并在短事务内先锁定父 Task，
+检查执行者、RUNNING 和租约有效期，再执行写入。统一先锁 Task 的顺序，使恢复操作与写入串行化，
+避免失效执行者覆盖恢复结果。failPending 仅允许处理未领取的 PENDING，不绕过运行中所有权检查。
+
+TaskRecoveryService 分批扫描过期 RUNNING。每个任务在一个事务内：
+
+1. 锁定 Task，重新检查是否仍然过期；续租已成功或已终结时跳过。
+2. 将 RUNNING 调用标为 UNKNOWN，将 PENDING 调用标为 FAILED。
+3. 将 RUNNING Step 和 Task 标为 FAILED，记录 `Task execution interrupted: worker lease expired`。
+
+已保存的调用结果、已完成的 Step 保持不变；任意写入失败时整次恢复回滚，后续扫描重试。
+普通运行失败的 TaskStore.fail 也在同一事务内补齐未完成的子记录收尾。
+恢复可以被多个实例重复触发，只有仍过期且未终结的任务会发生转换。
+
+| 环境变量 | 默认值 | 含义 |
+|---|---|---|
+| `AGENT_LEASE_DURATION_MS` | 60000 | 租约长度，必须大于心跳间隔 |
+| `AGENT_LEASE_HEARTBEAT_INTERVAL_MS` | 10000 | 单任务心跳间隔 |
+| `AGENT_LEASE_RECOVERY_INTERVAL_MS` | 10000 | 恢复扫描间隔 |
+| `AGENT_LEASE_RECOVERY_BATCH_SIZE` | 100 | 每次扫描的任务数量上限 |
+
+至少一个实例需要保持 `AGENT_SCHEDULER_ENABLED=true` 才会进行待执行和过期扫描。
+手动调用 Runner 时也会建立租约与心跳。`GET /tasks/{taskId}` 新增 workerId、heartbeatAt、leaseUntil，
+PENDING 时为 null，终结后保留最后记录供排查；状态是终结与否的判断依据。
+
+升级时先停止不支持租约的旧版本实例，再部署新版本。Flyway 自动执行 V2；
+旧 RUNNING 记录的 lease_until 为 null，会按执行中断统一收尾。PENDING 继续等待正常领取。
+
+租约保护数据库状态，不能撤销已产生的外部副作用，也不能强制停止任意工具代码。
+已获准的外部调用在进程暂停、租约过期后仍可能继续执行；进一步保证需要工具端幂等或执行者令牌校验。
+因此 UNKNOWN 不自动重试，恢复后的 FAILED 不重新排入待执行队列。

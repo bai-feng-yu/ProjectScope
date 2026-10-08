@@ -88,7 +88,13 @@ class LlmClientProtocolTests {
         var tasks = org.mockito.Mockito.mock(agent_backend.persistence.TaskStore.class);
         var steps = org.mockito.Mockito.mock(agent_backend.persistence.StepStore.class);
         var invocations = org.mockito.Mockito.mock(agent_backend.persistence.ToolInvocationStore.class);
-        var runner = new AgentRunner(llm, executor, registry, tasks, steps, invocations, 2);
+        var leases = org.mockito.Mockito.mock(agent_backend.task.TaskLeaseManager.class);
+        org.mockito.Mockito.when(leases.acquire(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+            var session = org.mockito.Mockito.mock(agent_backend.task.LeaseSession.class);
+            org.mockito.Mockito.when(session.lease()).thenReturn(new agent_backend.persistence.TaskLease(invocation.getArgument(0), "test-worker"));
+            return session;
+        });
+        var runner = new AgentRunner(llm, executor, registry, tasks, steps, invocations, leases, 2);
         // Complete JSON is still unsafe; incomplete JSON must be rejected before parsing.
         for (String arguments : List.of("{}", "{\"value\":")) {
             var calls = List.of(
@@ -104,9 +110,9 @@ class LlmClientProtocolTests {
             assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
             org.junit.jupiter.api.Assertions.assertTrue(state.getFailureReason().contains("finish_reason=length"));
             assertEquals(List.of(), state.getSteps());
-            org.mockito.Mockito.verify(steps).saveResponse(org.mockito.ArgumentMatchers.any(),
+            org.mockito.Mockito.verify(steps).saveResponse(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                     org.mockito.ArgumentMatchers.eq(response));
-            org.mockito.Mockito.verify(tasks).fail(org.mockito.ArgumentMatchers.eq(state.getTaskId()),
+            org.mockito.Mockito.verify(tasks).fail(org.mockito.ArgumentMatchers.eq(new agent_backend.persistence.TaskLease(state.getTaskId(), "test-worker")),
                     org.mockito.ArgumentMatchers.contains("finish_reason=length"));
         }
         org.mockito.Mockito.verifyNoInteractions(executor);

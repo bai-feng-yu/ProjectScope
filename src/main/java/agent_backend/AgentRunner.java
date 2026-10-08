@@ -9,6 +9,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.Assert;
 import agent_backend.persistence.TaskStore;
+import agent_backend.persistence.TaskLease;
+import agent_backend.task.TaskLeaseManager;
+import agent_backend.task.LeaseSession;
 import agent_backend.persistence.StepStore;
 import agent_backend.persistence.ToolInvocationStore;
 import agent_backend.tool.ToolBatchExecutor;
@@ -25,9 +28,10 @@ public class AgentRunner {
     private final StepStore steps;
     private final ToolInvocationStore invocations;
     private final int maxSteps;
+    private final TaskLeaseManager leases;
 
     public AgentRunner(LlmClient llmClient, ToolBatchExecutor toolExecutor, ToolRegistry toolRegistry,
-            TaskStore tasks, StepStore steps, ToolInvocationStore invocations,
+            TaskStore tasks, StepStore steps, ToolInvocationStore invocations, TaskLeaseManager leases,
             @Value("${agent.max-steps:10}") int maxSteps) {
         this.llmClient = llmClient;
         this.toolExecutor = toolExecutor;
@@ -36,6 +40,7 @@ public class AgentRunner {
         this.steps = steps;
         this.invocations = invocations;
         this.maxSteps = maxSteps;
+        this.leases = leases;
     }
 
     // Deliberately not transactional: model requests and tool effects must not hold DB transactions.
@@ -59,55 +64,61 @@ public class AgentRunner {
     }
 
     private AgentState execute(AgentState state) {
-        boolean started = false;
+        LeaseSession session = null;
+        TaskLease lease = null;
         String activeStepId = null;
         try {
-            tasks.start(state.getTaskId());
-            started = true;
+            session = leases.acquire(state.getTaskId());
+            lease = session.lease();
             state.setTools(toolRegistry.getAllTools());
             for (int number = 1; number <= maxSteps; number++) {
                 String stepId = UUID.randomUUID().toString();
-                steps.create(stepId, state.getTaskId(), number);
+                session.check();
+                steps.create(lease, stepId, number);
                 activeStepId = stepId;
+                session.check();
                 var response = llmClient.request(state);
+                session.check();
                 // Save the raw response even when parsing or truncation protection rejects it.
-                steps.saveResponse(stepId, response);
+                steps.saveResponse(lease, stepId, response);
                 LlmDecision decision = llmClient.parseDecision(response);
                 if (decision.getDecisionType() == LlmDecision.DecsionType.TOOL_CALL) {
-                    var results = toolExecutor.execute(new ToolExecutionContext(state.getTaskId(), stepId),
+                    var results = toolExecutor.execute(new ToolExecutionContext(session, stepId),
                             decision.getToolCalls());
                     var completedStep = new AgentStep(stepId, number, decision, results);
-                    steps.complete(stepId);
+                    steps.complete(lease, stepId);
                     activeStepId = null;
                     state.addStep(completedStep);
                 } else {
                     Assert.hasText(decision.getFinalAnswer(), "final answer must not be blank");
-                    steps.complete(stepId);
+                    steps.complete(lease, stepId);
                     activeStepId = null;
-                    tasks.complete(state.getTaskId(), decision.getFinalAnswer());
+                    tasks.complete(lease, decision.getFinalAnswer());
                     state.complete(decision.getFinalAnswer());
                     return state;
                 }
             }
             String reason = "Agent exceeded maximum steps: " + maxSteps;
-            state.fail(persistFailure(state.getTaskId(), null, reason));
+            state.fail(persistFailure(lease, null, reason));
         } catch (Exception exception) {
             log.error("Agent execution failed for task {}", state.getTaskId(), exception);
             String reason = describe(exception);
             // A rejected start must never mark another executor's task FAILED.
-            state.fail(started ? persistFailure(state.getTaskId(), activeStepId, reason) : reason);
+            state.fail(lease != null ? persistFailure(lease, activeStepId, reason) : reason);
+        } finally {
+            if (session != null) session.close();
         }
         return state;
     }
 
-    private String persistFailure(String taskId, String stepId, String reason) {
+    private String persistFailure(TaskLease lease, String stepId, String reason) {
         List<String> errors = new ArrayList<>();
         // Independent attempts: a failed cleanup must not prevent attempting the task's terminal write.
         if (stepId != null) {
-            attempt(() -> invocations.abortUnfinished(stepId, reason), errors);
-            attempt(() -> steps.fail(stepId, reason), errors);
+            attempt(() -> invocations.abortUnfinished(lease, stepId, reason), errors);
+            attempt(() -> steps.fail(lease, stepId, reason), errors);
         }
-        attempt(() -> tasks.fail(taskId, reason), errors);
+        attempt(() -> tasks.fail(lease, reason), errors);
         return errors.isEmpty() ? reason : reason + "; Failure persistence incomplete: " + String.join("; ", errors);
     }
 

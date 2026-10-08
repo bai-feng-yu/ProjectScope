@@ -8,6 +8,14 @@ import org.springframework.util.Assert;
 
 @Configuration
 public class TaskExecutorConfig {
+    @Bean(destroyMethod = "shutdownNow")
+    public java.util.concurrent.ScheduledExecutorService leaseHeartbeatExecutor() {
+        var executor = new java.util.concurrent.ScheduledThreadPoolExecutor(2,
+                Thread.ofPlatform().daemon().name("task-heartbeat-", 0).factory());
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
     @Bean
     public ThreadPoolTaskExecutor agentTaskExecutor(
             @Value("${agent.executor.workers:2}") int workers) {

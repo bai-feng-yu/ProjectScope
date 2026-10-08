@@ -28,7 +28,7 @@ class PendingTaskSchedulerTests {
         verify(tasks).findPending(2);
         verify(dispatcher).tryDispatch("first");
         verify(dispatcher).tryDispatch("second");
-        verify(tasks, never()).start(any());
+        verify(tasks, never()).start(any(), anyLong());
         verify(tasks, never()).fail(any(), any());
     }
 

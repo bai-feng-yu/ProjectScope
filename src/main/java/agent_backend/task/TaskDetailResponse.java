@@ -8,11 +8,11 @@ import agent_backend.persistence.model.TaskStatus;
 
 public record TaskDetailResponse(String taskId, String task, TaskStatus status,
         String finalAnswer, String failureReason, Instant createdAt, Instant startedAt,
-        Instant finishedAt, Instant updatedAt) {
+        Instant finishedAt, Instant updatedAt, String workerId, Instant heartbeatAt, Instant leaseUntil) {
     public static TaskDetailResponse from(TaskRecord record) {
         return new TaskDetailResponse(record.taskId(), record.taskInput(), record.status(),
                 record.finalAnswer(), record.failureReason(), utc(record.createdAt()), utc(record.startedAt()),
-                utc(record.finishedAt()), utc(record.updatedAt()));
+                utc(record.finishedAt()), utc(record.updatedAt()), record.workerId(), utc(record.heartbeatAt()), utc(record.leaseUntil()));
     }
 
     static Instant utc(LocalDateTime time) {
