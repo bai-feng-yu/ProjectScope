@@ -39,7 +39,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
 /** Uses a disposable MySQL instance, never the developer's configured database. */
-@SpringBootTest
+@SpringBootTest(properties = "agent.scheduler.enabled=false")
 @Testcontainers(disabledWithoutDocker = true)
 class MySqlMigrationTests {
     @Container
@@ -264,6 +264,51 @@ class MySqlMigrationTests {
         var step = steps.findByTask(task.taskId()).getFirst();
         assertEquals(StepStatus.COMPLETED, step.status());
         assertEquals(ToolCallStatus.SUCCEEDED, invocations.findByStep(step.stepId()).getFirst().status());
+    }
+
+
+    @Test
+    void pendingScanIsOrderedAndExcludesRunningAndTerminalTasks() {
+        String first = id();
+        String second = id();
+        String running = id();
+        String failed = id();
+        for (String taskId : List.of(first, second, running, failed)) tasks.create(taskId, "task");
+        jdbc.update("UPDATE agent_task SET created_at = '2000-01-01 00:00:00' WHERE task_id = ?", first);
+        jdbc.update("UPDATE agent_task SET created_at = '2000-01-02 00:00:00' WHERE task_id = ?", second);
+        jdbc.update("UPDATE agent_task SET created_at = '1999-01-01 00:00:00' WHERE task_id IN (?, ?)", running, failed);
+        tasks.start(running);
+        tasks.fail(failed, "failed");
+        assertEquals(List.of(first, second), tasks.findPending(2));
+        assertEquals(List.of(first), tasks.findPending(1));
+        assertThrows(IllegalArgumentException.class, () -> tasks.findPending(0));
+    }
+
+    @Test
+    void concurrentClaimHasExactlyOneWinner() throws Exception {
+        String taskId = id();
+        tasks.create(taskId, "task");
+        var ready = new java.util.concurrent.CountDownLatch(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Boolean> claim = () -> {
+                ready.countDown();
+                assertTrue(start.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                try {
+                    tasks.start(taskId);
+                    return true;
+                } catch (IllegalStateException alreadyClaimed) {
+                    return false;
+                }
+            };
+            var first = pool.submit(claim);
+            var second = pool.submit(claim);
+            assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            start.countDown();
+            assertEquals(1, (first.get(5, java.util.concurrent.TimeUnit.SECONDS) ? 1 : 0)
+                    + (second.get(5, java.util.concurrent.TimeUnit.SECONDS) ? 1 : 0));
+        }
+        assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
     }
 
     private AgentRunner runner(LlmClient llm, ToolCall tools, int limit) {

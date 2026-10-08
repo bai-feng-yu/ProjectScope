@@ -1,32 +1,57 @@
 package agent_backend.task;
 
-import agent_backend.AgentRunner;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
 @Component
 public class LocalTaskDispatcher implements TaskDispatcher {
-    private static final Logger log = LoggerFactory.getLogger(LocalTaskDispatcher.class);
     private final ThreadPoolTaskExecutor executor;
-    private final AgentRunner runner;
+    private final TaskWorker worker;
+    private final Semaphore slots;
+    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
 
-    public LocalTaskDispatcher(@Qualifier("agentTaskExecutor") ThreadPoolTaskExecutor executor, AgentRunner runner) {
+    public LocalTaskDispatcher(@Qualifier("agentTaskExecutor") ThreadPoolTaskExecutor executor, TaskWorker worker) {
         this.executor = executor;
-        this.runner = runner;
+        this.worker = worker;
+        this.slots = new Semaphore(executor.getMaxPoolSize());
     }
 
     @Override
-    public void dispatch(String taskId) {
-        executor.execute(() -> {
-            try {
-                runner.runExisting(taskId);
-            } catch (Exception exception) {
-                // Loading a task can fail before Runner can own it; never overwrite a concurrent owner.
-                log.error("Could not execute submitted task {}", taskId, exception);
-            }
-        });
+    public int availableCapacity() { return slots.availablePermits(); }
+
+    @Override
+    public boolean tryDispatch(String taskId) {
+        if (!slots.tryAcquire()) return false;
+        if (!inFlight.add(taskId)) {
+            slots.release();
+            return false;
+        }
+        try {
+            executor.execute(() -> {
+                try {
+                    worker.execute(taskId);
+                } finally {
+                    release(taskId);
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException exception) {
+            // The worker never started, so the database record remains PENDING.
+            release(taskId);
+            return false;
+        } catch (RuntimeException exception) {
+            release(taskId);
+            throw exception;
+        }
+    }
+
+    private void release(String taskId) {
+        inFlight.remove(taskId);
+        slots.release();
     }
 }

@@ -1,6 +1,7 @@
 package agent_backend.persistence.jdbc;
 
 import java.util.Optional;
+import java.util.List;
 import org.springframework.jdbc.core.DataClassRowMapper;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -51,5 +52,14 @@ public class JdbcTaskStore implements TaskStore {
     public Optional<TaskRecord> find(String taskId) {
         return jdbc.query("SELECT * FROM agent_task WHERE task_id = ?",
                 DataClassRowMapper.newInstance(TaskRecord.class), taskId).stream().findFirst();
+    }
+
+    @Override
+    public List<String> findPending(int limit) {
+        Assert.isTrue(limit > 0, "limit must be positive");
+        return jdbc.queryForList("""
+                SELECT task_id FROM agent_task WHERE status = 'PENDING'
+                ORDER BY created_at, task_id LIMIT ?
+                """, String.class, limit);
     }
 }

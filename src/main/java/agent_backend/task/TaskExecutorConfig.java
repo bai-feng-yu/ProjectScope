@@ -10,13 +10,13 @@ import org.springframework.util.Assert;
 public class TaskExecutorConfig {
     @Bean
     public ThreadPoolTaskExecutor agentTaskExecutor(
-            @Value("${agent.executor.workers:2}") int workers,
-            @Value("${agent.executor.queue-capacity:32}") int queueCapacity) {
-        Assert.isTrue(workers > 0 && queueCapacity >= 0, "Invalid task executor capacity");
+            @Value("${agent.executor.workers:2}") int workers) {
+        Assert.isTrue(workers > 0, "Invalid task executor capacity");
         var executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(workers);
         executor.setMaxPoolSize(workers);
-        executor.setQueueCapacity(queueCapacity);
+        // Waiting work stays PENDING in MySQL, not in an in-memory executor queue.
+        executor.setQueueCapacity(0);
         executor.setThreadNamePrefix("agent-task-");
         // Default AbortPolicy: never run a rejected task in the HTTP request thread.
         executor.setWaitForTasksToCompleteOnShutdown(true);

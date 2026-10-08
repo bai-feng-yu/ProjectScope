@@ -1,6 +1,7 @@
 package agent_backend.persistence;
 
 import java.util.Optional;
+import java.util.List;
 import agent_backend.persistence.model.TaskRecord;
 
 public interface TaskStore {
@@ -9,4 +10,5 @@ public interface TaskStore {
     void complete(String taskId, String answer);
     void fail(String taskId, String reason);
     Optional<TaskRecord> find(String taskId);
+    List<String> findPending(int limit);
 }

@@ -14,13 +14,6 @@ public class TaskApiExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(TaskApiExceptionHandler.class);
     public record ApiError(String code, String message, String taskId) {}
 
-    @ExceptionHandler(TaskSubmissionRejectedException.class)
-    public ResponseEntity<ApiError> rejected(TaskSubmissionRejectedException exception) {
-        log.warn("Task submission rejected for {}", exception.getTaskId(), exception);
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(
-                new ApiError("TASK_SUBMISSION_REJECTED", exception.getMessage(), exception.getTaskId()));
-    }
-
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiError> storageUnavailable(DataAccessException exception) {
         log.error("Task storage operation failed", exception);

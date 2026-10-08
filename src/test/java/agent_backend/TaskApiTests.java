@@ -10,7 +10,6 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.RejectedExecutionException;
 import agent_backend.persistence.*;
 import agent_backend.persistence.model.*;
 import agent_backend.task.*;
@@ -26,19 +25,18 @@ class TaskApiTests {
     private final TaskStore tasks = mock(TaskStore.class);
     private final StepStore steps = mock(StepStore.class);
     private final ToolInvocationStore invocations = mock(ToolInvocationStore.class);
-    private final TaskDispatcher dispatcher = mock(TaskDispatcher.class);
     private final JsonMapper mapper = JsonMapper.builder().build();
     private MockMvc mvc;
 
     @BeforeEach
     void setup() {
-        var service = new TaskService(tasks, steps, invocations, dispatcher, mapper);
+        var service = new TaskService(tasks, steps, invocations, mapper);
         mvc = MockMvcBuilders.standaloneSetup(new TaskControler(service))
                 .setControllerAdvice(new TaskApiExceptionHandler()).build();
     }
 
     @Test
-    void submitPersistsBeforeDispatchAndReturnsAcceptedWithLocation() throws Exception {
+    void submitPersistsPendingTaskAndReturnsAcceptedWithLocation() throws Exception {
         var response = mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON)
                 .content("{\"task\":\"hello\"}"))
                 .andExpect(status().isAccepted()).andExpect(jsonPath("$.status").value("PENDING"))
@@ -46,9 +44,7 @@ class TaskApiTests {
         String id = mapper.readTree(response.getContentAsString()).get("taskId").asText();
         assertEquals(id, UUID.fromString(id).toString());
         assertEquals("/tasks/" + id, response.getHeader("Location"));
-        var order = inOrder(tasks, dispatcher);
-        order.verify(tasks).create(id, "hello");
-        order.verify(dispatcher).dispatch(id);
+        verify(tasks).create(id, "hello");
         verifyNoInteractions(steps, invocations);
     }
 
@@ -58,7 +54,7 @@ class TaskApiTests {
             mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON).content(body))
                     .andExpect(status().isBadRequest());
         }
-        verifyNoInteractions(tasks, dispatcher);
+        verifyNoInteractions(tasks);
     }
 
     @Test
@@ -77,7 +73,6 @@ class TaskApiTests {
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("FAILED"))
                 .andExpect(jsonPath("$.failureReason").value("model failed"));
-        verifyNoInteractions(dispatcher);
     }
 
     @Test
@@ -99,7 +94,6 @@ class TaskApiTests {
                 .andExpect(jsonPath("$[0].calls[0].result.data").value("ok"))
                 .andExpect(jsonPath("$[0].calls[1].status").value("RUNNING"))
                 .andExpect(jsonPath("$[0].calls[1].result").doesNotExist());
-        verifyNoInteractions(dispatcher);
     }
 
     @Test
@@ -115,24 +109,11 @@ class TaskApiTests {
     }
 
     @Test
-    void rejectedSubmissionHasQueryableIdAndFailedRecord() throws Exception {
-        doThrow(new RejectedExecutionException("full")).when(dispatcher).dispatch(anyString());
-        var response = mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"task\":\"hello\"}"))
-                .andExpect(status().isServiceUnavailable())
-                .andExpect(jsonPath("$.code").value("TASK_SUBMISSION_REJECTED"))
-                .andReturn().getResponse();
-        String id = mapper.readTree(response.getContentAsString()).get("taskId").asText();
-        verify(tasks).fail(eq(id), contains("submission rejected"));
-    }
-
-    @Test
     void databaseFailureDoesNotDispatchAndHidesSqlDetails() throws Exception {
         doThrow(new DataAccessResourceFailureException("secret connection info")).when(tasks).create(any(), any());
         mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON).content("{\"task\":\"hello\"}"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("TASK_STORAGE_UNAVAILABLE"))
                 .andExpect(jsonPath("$.message").value("Task storage is temporarily unavailable"));
-        verifyNoInteractions(dispatcher);
     }
 }

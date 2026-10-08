@@ -1,9 +1,9 @@
-# MySQL 持久化与任务接口：阶段 1–3
+# MySQL 持久化与任务接口：阶段 1–4
 
 已提供数据源、Flyway 自动迁移、三张表及对应的只读 Java record/状态枚举。
-阶段 2 已将 Runner 接入 MySQL。阶段 3 将 HTTP 接口拆为提交、详情查询和步骤查询，
-提交后由本机有界线程池执行；数据库同时记录工具轮次、失败轮次和最终回答轮次。
-数据库轮询调度和崩溃恢复留到后续阶段。
+阶段 2 已将 Runner 接入 MySQL。阶段 3 将 HTTP 接口拆为提交、详情查询和步骤查询。
+阶段 4 使用 MySQL 保存待执行任务，按本机空闲容量轮询调度；数据库同时记录工具轮次、
+失败轮次和最终回答轮次。运行中任务的崩溃恢复留到阶段 5。
 
 ## 启动配置
 
@@ -155,24 +155,42 @@ Location: /tasks/<taskId>
 - 缺失/空白 task、非法 JSON、非法 taskId 格式：400。
 - 合法 taskId 对应任务不存在：404。
 - 数据库存储操作失败：503，code 为 `TASK_STORAGE_UNAVAILABLE`。
-- 后台执行器容量耗尽或关闭：503，code 为 `TASK_SUBMISSION_REJECTED`，返回已创建的 taskId；
-  服务尝试将该任务标为 FAILED。若该次写库也失败，用返回的 ID 查询实际持久化状态。
+- 本机执行容量耗尽不影响接收：任务仍以 PENDING 持久化并返回 202，等待后续调度。
 
-## 当前后台执行边界
+## 阶段 4：数据库轮询与受控并发
 
-`TaskService.submit` 先通过单条 INSERT 提交 PENDING 任务，再调用 `TaskDispatcher`。
-它声明 `Propagation.NEVER`，避免外层事务导致 Worker 读取尚未提交的任务。
-`LocalTaskDispatcher` 在线程池中调用 `AgentRunner.runExisting(taskId)`，不会新建第二条 Task。
-Runner 通过 PENDING → RUNNING 条件更新取得执行资格，未取得资格不改写其他执行者的任务状态。
-Runner 的同步 `run(task)` 仍可供内部调用；HTTP 提交已不使用该路径。
+```text
+HTTP → TaskService.submit → 事务写入 PENDING → 202
+PendingTaskScheduler → 查询本机可用执行名额 → 按名额读取 PENDING 候选
+→ LocalTaskDispatcher 预占执行名额 → TaskWorker → AgentRunner.runExisting
+→ 条件更新 PENDING 为 RUNNING → 只有更新成功的执行者请求模型/调用工具
+```
 
-默认同时执行 2 个任务，队列容量 32，可通过 `AGENT_EXECUTOR_WORKERS` 和
-`AGENT_EXECUTOR_QUEUE_CAPACITY` 调整。队列满时拒绝，不在 HTTP 请求线程中执行工具。
+`TaskService.submit` 仅负责事务写库，不调用线程池。调度器只能看到已提交的任务。
+候选查询按 created_at、task_id 排序，使用现有索引，LIMIT 等于本机空闲名额。
+没有容量就不查询数据库。候选查询本身不领取任务，领取动作在 Worker 中完成。
+多个实例可能读到同一候选，但 PENDING → RUNNING 条件更新最多只允许一个执行者继续。
+Runner 的同步 run(task) 保留供内部调用，HTTP 不使用该路径。
 
-当前数据库写入与本机入队不是原子操作。进程在两者之间崩溃，或执行前读取数据库失败，
-可能留下 PENDING；执行中崩溃可能留下 RUNNING。此阶段不自动恢复执行，
-阶段 4 的数据库轮询领取及阶段 5 的租约恢复负责补齐这些能力。
+本机使用信号量预占容量，并记录 inFlight ID，避免候选在开始执行前重复占用名额。
+执行结束或提交线程池失败时释放名额。线程池没有等待队列；等待任务始终保存在 MySQL。
+线程池拒绝时不更改数据库状态、不回退到调度线程执行，后续轮询可再次尝试。
+数据库暂时不可用时记录错误，下一次轮询继续尝试。
+
+配置：
+
+| 环境变量 | 默认值 | 含义 |
+|---|---|---|
+| `AGENT_EXECUTOR_WORKERS` | 2 | 每个应用实例的并发执行上限 |
+| `AGENT_SCHEDULER_POLL_INTERVAL_MS` | 1000 | 上一次轮询结束到下一次开始的间隔（毫秒） |
+| `AGENT_SCHEDULER_ENABLED` | true | 是否启用本机调度，可用于只接收/查询任务的实例 |
+
+阶段 3 的 `AGENT_EXECUTOR_QUEUE_CAPACITY` 已移除，数据库承担待执行队列。
+应用重新启动后会自动扫描此前的 PENDING，不需要重新提交 HTTP 请求。
+RUNNING 不在扫描范围内，执行中崩溃遗留的任务仍由阶段 5 的租约恢复处理，当前不自动重跑。
+这些限制针对后台调度；直接在业务代码中调用同步 Runner 不受调度器名额控制。
 
 TaskApiTests 验证 HTTP 契约、输入校验、数据库查询、错误响应；LocalTaskDispatcherTests
-验证后台线程执行及容量拒绝。TaskApiMySqlTests 用真实 MySQL 验证完整提交、执行、查询链路，
-无 Docker 时明确跳过。
+验证名额、重复候选抑制及拒绝后重试。PendingTaskSchedulerTests 验证容量限制和轮询恢复。
+MySqlMigrationTests 验证待执行查询与并发领取；TaskApiMySqlTests 验证完整提交、调度、查询链路，
+以及不经 HTTP 提交的历史 PENDING 也会被领取。真实 MySQL 测试在无 Docker 时明确跳过。

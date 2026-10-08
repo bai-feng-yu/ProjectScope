@@ -2,7 +2,6 @@ package agent_backend.task;
 
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.RejectedExecutionException;
 import agent_backend.persistence.TaskStore;
 import agent_backend.persistence.StepStore;
 import agent_backend.persistence.ToolInvocationStore;
@@ -10,7 +9,6 @@ import agent_backend.persistence.model.TaskRecord;
 import agent_backend.persistence.model.TaskStatus;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 import org.springframework.web.server.ResponseStatusException;
@@ -21,34 +19,22 @@ public class TaskService {
     private final TaskStore tasks;
     private final StepStore steps;
     private final ToolInvocationStore invocations;
-    private final TaskDispatcher dispatcher;
     private final ObjectMapper mapper;
 
     public TaskService(TaskStore tasks, StepStore steps, ToolInvocationStore invocations,
-            TaskDispatcher dispatcher, ObjectMapper mapper) {
+            ObjectMapper mapper) {
         this.tasks = tasks;
         this.steps = steps;
         this.invocations = invocations;
-        this.dispatcher = dispatcher;
         this.mapper = mapper;
     }
 
-    // The single INSERT must auto-commit before another thread can load the task.
-    @Transactional(propagation = Propagation.NEVER)
+    // The database is the durable queue; the scheduler sees this task only after commit.
+    @Transactional
     public CreateTaskResponse submit(CreateTaskRequest request) {
         Assert.hasText(request.task(), "task must not be blank");
         String taskId = UUID.randomUUID().toString();
         tasks.create(taskId, request.task());
-        try {
-            dispatcher.dispatch(taskId);
-        } catch (RejectedExecutionException exception) {
-            try {
-                tasks.fail(taskId, "Task submission rejected: executor capacity exhausted or shutting down");
-            } catch (RuntimeException persistenceException) {
-                exception.addSuppressed(persistenceException);
-            }
-            throw new TaskSubmissionRejectedException(taskId, exception);
-        }
         return new CreateTaskResponse(taskId, TaskStatus.PENDING);
     }
 

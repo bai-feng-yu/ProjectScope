@@ -29,7 +29,8 @@ import tools.jackson.databind.json.JsonMapper;
 // These tests exercise tools only. MySQL/Flyway is covered by MySqlMigrationTests.
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
-        "spring.flyway.enabled=false"
+        "spring.flyway.enabled=false",
+        "agent.scheduler.enabled=false"
 })
 class AgentBackendApplicationTests {
     @org.springframework.test.context.bean.override.mockito.MockitoBean

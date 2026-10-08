@@ -89,4 +89,17 @@ class TaskApiMySqlTests {
                 .andExpect(jsonPath("$[0].status").value("COMPLETED"));
         verify(llm, times(1)).request(any());
     }
+
+    @Test
+    void persistedPendingTaskNeedsNoInMemorySubmissionToBeDiscovered() {
+        when(llm.request(any())).thenReturn(Map.of("test", "response"));
+        when(llm.parseDecision(any())).thenReturn(LlmDecision.finalAnswer("recovered pending task"));
+        String id = java.util.UUID.randomUUID().toString();
+        tasks.create(id, "previously submitted task");
+        assertTimeoutPreemptively(Duration.ofSeconds(5), () -> {
+            while (tasks.find(id).orElseThrow().status() != TaskStatus.COMPLETED) Thread.sleep(20);
+        });
+        assertEquals("recovered pending task", tasks.find(id).orElseThrow().finalAnswer());
+        verify(llm, times(1)).request(any());
+    }
 }

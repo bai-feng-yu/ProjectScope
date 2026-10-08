@@ -1,6 +1,7 @@
 package agent_backend.task;
 
-/** Schedules a committed task without running the agent on the caller's thread. */
+/** Reserves local execution capacity before handing a database candidate to a worker. */
 public interface TaskDispatcher {
-    void dispatch(String taskId);
+    int availableCapacity();
+    boolean tryDispatch(String taskId);
 }
