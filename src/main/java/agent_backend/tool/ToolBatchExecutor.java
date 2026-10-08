@@ -5,5 +5,5 @@ import agent_backend.tool.result.ToolResult;
 
 /** Returns one result per call, in input order. */
 public interface ToolBatchExecutor {
-    List<ToolResult<?>> execute(List<ToolInvocation> calls);
+    List<ToolResult<?>> execute(ToolExecutionContext context, List<ToolInvocation> calls);
 }

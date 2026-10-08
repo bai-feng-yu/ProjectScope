@@ -26,8 +26,18 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import tools.jackson.databind.json.JsonMapper;
 
-@SpringBootTest
+// These tests exercise tools only. MySQL/Flyway is covered by MySqlMigrationTests.
+@SpringBootTest(properties = {
+        "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
+        "spring.flyway.enabled=false"
+})
 class AgentBackendApplicationTests {
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private agent_backend.persistence.TaskStore taskStore;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private agent_backend.persistence.StepStore stepStore;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private agent_backend.persistence.ToolInvocationStore invocationStore;
 	@Autowired private ToolRegistry registry;
 	@Autowired private ToolCall toolCall;
 	@Autowired private ToolDescriptorFactory descriptorFactory;

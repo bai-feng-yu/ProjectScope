@@ -7,9 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.List;
 import java.util.Map;
@@ -20,20 +17,31 @@ import agent_backend.tool.result.ToolFailure;
 import agent_backend.tool.result.ToolSuccess;
 import agent_backend.toolRegistry.ToolRegistry;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.MediaType;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class AgentRuntimeTests {
     private final LlmClient llm = mock(LlmClient.class);
     private final ToolCall tools = mock(ToolCall.class);
     private final ToolRegistry registry = mock(ToolRegistry.class);
 
+    private final agent_backend.persistence.TaskStore tasks = mock(agent_backend.persistence.TaskStore.class);
+    private final agent_backend.persistence.StepStore steps = mock(agent_backend.persistence.StepStore.class);
+    private final agent_backend.persistence.ToolInvocationStore invocations = mock(agent_backend.persistence.ToolInvocationStore.class);
+
+    @org.junit.jupiter.api.BeforeEach
+    void persistenceSetup() {
+        when(llm.request(any())).thenReturn(Map.of("test", "response"));
+        when(invocations.createBatch(any(), any())).thenAnswer(invocation -> {
+            List<?> calls = invocation.getArgument(1);
+            return calls.stream().map(call -> java.util.UUID.randomUUID().toString()).toList();
+        });
+    }
+
     private AgentRunner runner(int maxSteps) {
-        return new AgentRunner(llm, new SequentialToolBatchExecutor(tools), registry, maxSteps);
+        return new AgentRunner(llm, new SequentialToolBatchExecutor(tools, invocations), registry, tasks, steps, invocations, maxSteps);
     }
 
     private AgentStep step() {
-        return new AgentStep(LlmDecision.toolCall("call-1", "test_tool", Map.of()),
+        return new AgentStep("step-1", 1, LlmDecision.toolCall("call-1", "test_tool", Map.of()),
                 List.of(new ToolSuccess<>("call-1", "test_tool", "ok")));
     }
 
@@ -62,7 +70,7 @@ class AgentRuntimeTests {
 
     @Test
     void modelFailurePreservesCompletedToolSteps() {
-        when(llm.decide(any())).thenReturn(step().getDecision())
+        when(llm.parseDecision(any())).thenReturn(step().getDecision())
                 .thenThrow(new IllegalStateException("Invalid model response"));
         when(tools.callTool("call-1", "test_tool", Map.of())).thenAnswer(invocation -> step().getToolResults().getFirst());
 
@@ -75,7 +83,7 @@ class AgentRuntimeTests {
 
     @Test
     void unexpectedDispatcherFailureBecomesFailedState() {
-        when(llm.decide(any())).thenReturn(step().getDecision());
+        when(llm.parseDecision(any())).thenReturn(step().getDecision());
         when(tools.callTool("call-1", "test_tool", Map.of())).thenThrow(new IllegalStateException());
         var state = runner(3).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
@@ -84,7 +92,7 @@ class AgentRuntimeTests {
 
     @Test
     void toolFailureCanBeFollowedBySuccessfulAnswer() {
-        when(llm.decide(any())).thenReturn(step().getDecision(), LlmDecision.finalAnswer("Recovered"));
+        when(llm.parseDecision(any())).thenReturn(step().getDecision(), LlmDecision.finalAnswer("Recovered"));
         when(tools.callTool("call-1", "test_tool", Map.of())).thenReturn(
                 new ToolFailure<>("call-1", "test_tool", "INVALID_ARGUMENT", "Missing field"));
         var state = runner(3).run("task");
@@ -96,7 +104,7 @@ class AgentRuntimeTests {
 
     @Test
     void stepLimitReturnsFailureWithHistoryInsteadOfThrowing() {
-        when(llm.decide(any())).thenReturn(step().getDecision());
+        when(llm.parseDecision(any())).thenReturn(step().getDecision());
         when(tools.callTool("call-1", "test_tool", Map.of())).thenAnswer(invocation -> step().getToolResults().getFirst());
         var state = runner(1).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
@@ -113,31 +121,11 @@ class AgentRuntimeTests {
     }
 
     @Test
-    void taskEndpointReturnsStructuredSuccessAndFailure() throws Exception {
-        when(llm.decide(any())).thenReturn(LlmDecision.finalAnswer("Hello"))
-                .thenThrow(new IllegalStateException("Model unavailable"));
-        var mvc = MockMvcBuilders.standaloneSetup(new TaskControler(runner(3))).build();
-
-        mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON).content("{\"task\":\"hello\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.task").value("hello"))
-                .andExpect(jsonPath("$.status").value("COMPLETED"))
-                .andExpect(jsonPath("$.finalAnswer").value("Hello"))
-                .andExpect(jsonPath("$.steps").isArray());
-
-        mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON).content("{\"task\":\"hello\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("FAILED"))
-                .andExpect(jsonPath("$.failureReason").value("IllegalStateException: Model unavailable"))
-                .andExpect(jsonPath("$.steps").isArray());
-    }
-
-    @Test
     void batchRunsInOrderAndContinuesAfterToolFailure() {
         var calls = List.of(
                 new agent_backend.tool.ToolInvocation("first", "test_tool", Map.of("value", 1)),
                 new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of("value", 2)));
-        when(llm.decide(any())).thenReturn(LlmDecision.toolCalls(calls, null), LlmDecision.finalAnswer("done"));
+        when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null), LlmDecision.finalAnswer("done"));
         when(tools.callTool("first", "test_tool", Map.of("value", 1)))
                 .thenReturn(new ToolFailure<>("first", "test_tool", "INVALID_ARGUMENT", "Invalid"));
         when(tools.callTool("second", "test_tool", Map.of("value", 2)))
@@ -157,8 +145,130 @@ class AgentRuntimeTests {
         var call = new agent_backend.tool.ToolInvocation("id", "test_tool", Map.of());
         assertThrows(IllegalArgumentException.class, () -> LlmDecision.toolCalls(List.of(call, call), null));
         var decision = LlmDecision.toolCalls(List.of(call), null);
-        assertThrows(IllegalArgumentException.class, () -> new AgentStep(decision, List.of()));
-        assertThrows(IllegalArgumentException.class, () -> new AgentStep(decision,
+        assertThrows(IllegalArgumentException.class, () -> new AgentStep("step-1", 1, decision, List.of()));
+        assertThrows(IllegalArgumentException.class, () -> new AgentStep("step-1", 1, decision,
                 List.of(new ToolSuccess<>("wrong-id", "test_tool", "ok"))));
+    }
+
+    @Test
+    void writesEachResultBeforeStartingNextTool() {
+        var calls = List.of(
+                new agent_backend.tool.ToolInvocation("first", "test_tool", Map.of()),
+                new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of()));
+        when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null), LlmDecision.finalAnswer("done"));
+        org.mockito.Mockito.doReturn(List.of("inv-1", "inv-2")).when(invocations).createBatch(any(), any());
+        when(tools.callTool(any(), any(), any())).thenAnswer(invocation ->
+                new ToolSuccess<>(invocation.getArgument(0), "test_tool", "ok"));
+        var state = runner(2).run("task");
+        var order = org.mockito.Mockito.inOrder(tasks, steps, llm, invocations, tools);
+        order.verify(tasks).create(state.getTaskId(), "task");
+        order.verify(tasks).start(state.getTaskId());
+        order.verify(steps).create(state.getSteps().getFirst().getStepId(), state.getTaskId(), 1);
+        order.verify(llm).request(any());
+        order.verify(steps).saveResponse(any(), any());
+        order.verify(llm).parseDecision(any());
+        order.verify(invocations).createBatch(any(), org.mockito.ArgumentMatchers.eq(calls));
+        order.verify(invocations).start("inv-1");
+        order.verify(tools).callTool("first", "test_tool", Map.of());
+        order.verify(invocations).finish(org.mockito.ArgumentMatchers.eq("inv-1"), any());
+        order.verify(invocations).start("inv-2");
+        order.verify(tools).callTool("second", "test_tool", Map.of());
+        order.verify(invocations).finish(org.mockito.ArgumentMatchers.eq("inv-2"), any());
+        order.verify(steps).complete(state.getSteps().getFirst().getStepId());
+        order.verify(llm).request(any());
+        order.verify(steps).complete(any());
+        order.verify(tasks).complete(state.getTaskId(), "done");
+        assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
+    }
+
+    @Test
+    void resultSaveFailureStopsRemainingCallsAndAttemptsFailureCleanup() {
+        var calls = List.of(
+                new agent_backend.tool.ToolInvocation("first", "test_tool", Map.of()),
+                new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of()));
+        when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null));
+        org.mockito.Mockito.doReturn(List.of("inv-1", "inv-2")).when(invocations).createBatch(any(), any());
+        when(tools.callTool("first", "test_tool", Map.of()))
+                .thenAnswer(invocation -> new ToolSuccess<>("first", "test_tool", "ok"));
+        org.mockito.Mockito.doThrow(new IllegalStateException("database write failed"))
+                .when(invocations).finish(org.mockito.ArgumentMatchers.eq("inv-1"), any());
+        var state = runner(2).run("task");
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        org.mockito.Mockito.verify(tools, org.mockito.Mockito.never()).callTool("second", "test_tool", Map.of());
+        org.mockito.Mockito.verify(invocations).abortUnfinished(any(), org.mockito.ArgumentMatchers.contains("database write failed"));
+        org.mockito.Mockito.verify(steps).fail(any(), any());
+        org.mockito.Mockito.verify(tasks).fail(state.getTaskId(), state.getFailureReason());
+        org.mockito.Mockito.verify(llm, org.mockito.Mockito.times(1)).request(any());
+    }
+
+    @Test
+    void batchSaveFailurePreventsAllToolSideEffects() {
+        when(llm.parseDecision(any())).thenReturn(step().getDecision());
+        org.mockito.Mockito.doThrow(new IllegalStateException("batch save failed")).when(invocations).createBatch(any(), any());
+        var state = runner(2).run("task");
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        org.mockito.Mockito.verifyNoInteractions(tools);
+    }
+
+    @Test
+    void rawResponseSaveFailurePreventsParsingAndExecution() {
+        org.mockito.Mockito.doThrow(new IllegalStateException("response save failed"))
+                .when(steps).saveResponse(any(), any());
+        var state = runner(2).run("task");
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        org.mockito.Mockito.verify(llm, org.mockito.Mockito.never()).parseDecision(any());
+        org.mockito.Mockito.verifyNoInteractions(tools);
+    }
+
+    @Test
+    void unavailableFailureStorageIsReportedAndOtherCleanupStillAttempted() {
+        when(llm.request(any())).thenThrow(new IllegalStateException("request failed"));
+        org.mockito.Mockito.doThrow(new IllegalStateException("cleanup unavailable"))
+                .when(invocations).abortUnfinished(any(), any());
+        org.mockito.Mockito.doThrow(new IllegalStateException("task write unavailable"))
+                .when(tasks).fail(any(), any());
+        var state = runner(2).run("task");
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        assertTrue(state.getFailureReason().contains("request failed"));
+        assertTrue(state.getFailureReason().contains("Failure persistence incomplete"));
+        org.mockito.Mockito.verify(steps).fail(any(), any());
+        org.mockito.Mockito.verify(tasks).fail(any(), any());
+    }
+
+    @Test
+    void taskCreationFailureNeverRequestsModel() {
+        org.mockito.Mockito.doThrow(new IllegalStateException("database unavailable"))
+                .when(tasks).create(any(), any());
+        var state = runner(2).run("task");
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        org.mockito.Mockito.verifyNoInteractions(llm, tools, steps, invocations);
+    }
+
+    @Test
+    void existingTaskUsesPersistedIdAndIsNotCreatedAgain() {
+        String taskId = java.util.UUID.randomUUID().toString();
+        when(tasks.find(taskId)).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
+                taskId, "stored input", agent_backend.persistence.model.TaskStatus.PENDING,
+                null, null, null, null, null, null)));
+        when(llm.parseDecision(any())).thenReturn(LlmDecision.finalAnswer("done"));
+        var state = runner(2).runExisting(taskId);
+        assertEquals(taskId, state.getTaskId());
+        assertEquals("stored input", state.getTask());
+        assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
+        org.mockito.Mockito.verify(tasks, org.mockito.Mockito.never()).create(any(), any());
+        org.mockito.Mockito.verify(tasks).complete(taskId, "done");
+    }
+
+    @Test
+    void rejectedStartDoesNotFailAnotherExecutorsTask() {
+        String taskId = java.util.UUID.randomUUID().toString();
+        when(tasks.find(taskId)).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
+                taskId, "stored input", agent_backend.persistence.model.TaskStatus.RUNNING,
+                null, null, null, null, null, null)));
+        org.mockito.Mockito.doThrow(new IllegalStateException("already started")).when(tasks).start(taskId);
+        var state = runner(2).runExisting(taskId);
+        assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
+        org.mockito.Mockito.verify(tasks, org.mockito.Mockito.never()).fail(any(), any());
+        org.mockito.Mockito.verifyNoInteractions(llm, tools, steps, invocations);
     }
 }

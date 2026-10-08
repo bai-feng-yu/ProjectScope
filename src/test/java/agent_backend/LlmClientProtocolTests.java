@@ -36,7 +36,7 @@ class LlmClientProtocolTests {
                 "id", "model-call-1", "function", Map.of("name", "test", "arguments", "{}")))))));
         LlmDecision decision = ReflectionTestUtils.invokeMethod(client, "parseDecision", response);
         AgentState state = new AgentState("test task");
-        state.addStep(new AgentStep(decision,
+        state.addStep(new AgentStep("step-1", 1, decision,
                 List.of(new ToolFailure<>(decision.getToolCalls().getFirst().toolCallId(), "test", "INVALID_ARGUMENT", "Required field missing"))));
 
         List<Map<String, Object>> messages = ReflectionTestUtils.invokeMethod(client, "buildMessages", state);
@@ -58,7 +58,7 @@ class LlmClientProtocolTests {
         assertEquals(2, decision.getToolCalls().size());
         assertEquals(2, decision.getToolCalls().get(1).arguments().get("value"));
         AgentState state = new AgentState("task");
-        state.addStep(new AgentStep(decision, List.of(
+        state.addStep(new AgentStep("step-1", 1, decision, List.of(
                 new ToolFailure<>("first", "test", "INVALID_ARGUMENT", "Invalid"),
                 new agent_backend.tool.result.ToolSuccess<>("second", "test", "ok"))));
         List<Map<String, Object>> messages = ReflectionTestUtils.invokeMethod(client, "buildMessages", state);
@@ -85,7 +85,10 @@ class LlmClientProtocolTests {
         var executor = org.mockito.Mockito.mock(agent_backend.tool.ToolBatchExecutor.class);
         var registry = org.mockito.Mockito.mock(agent_backend.toolRegistry.ToolRegistry.class);
         var llm = org.mockito.Mockito.mock(LlmClient.class);
-        var runner = new AgentRunner(llm, executor, registry, 2);
+        var tasks = org.mockito.Mockito.mock(agent_backend.persistence.TaskStore.class);
+        var steps = org.mockito.Mockito.mock(agent_backend.persistence.StepStore.class);
+        var invocations = org.mockito.Mockito.mock(agent_backend.persistence.ToolInvocationStore.class);
+        var runner = new AgentRunner(llm, executor, registry, tasks, steps, invocations, 2);
         // Complete JSON is still unsafe; incomplete JSON must be rejected before parsing.
         for (String arguments : List.of("{}", "{\"value\":")) {
             var calls = List.of(
@@ -93,13 +96,18 @@ class LlmClientProtocolTests {
                     Map.of("id", "second", "function", Map.of("name", "test", "arguments", arguments)));
             var response = Map.of("choices", List.of(Map.of("finish_reason", "length",
                     "message", Map.of("tool_calls", calls))));
+            org.mockito.Mockito.when(llm.request(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> response);
             org.mockito.Mockito.doAnswer(
                     invocation -> ReflectionTestUtils.invokeMethod(client, "parseDecision", response))
-                    .when(llm).decide(org.mockito.ArgumentMatchers.any());
+                    .when(llm).parseDecision(org.mockito.ArgumentMatchers.any());
             AgentState state = runner.run("task");
             assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
             org.junit.jupiter.api.Assertions.assertTrue(state.getFailureReason().contains("finish_reason=length"));
             assertEquals(List.of(), state.getSteps());
+            org.mockito.Mockito.verify(steps).saveResponse(org.mockito.ArgumentMatchers.any(),
+                    org.mockito.ArgumentMatchers.eq(response));
+            org.mockito.Mockito.verify(tasks).fail(org.mockito.ArgumentMatchers.eq(state.getTaskId()),
+                    org.mockito.ArgumentMatchers.contains("finish_reason=length"));
         }
         org.mockito.Mockito.verifyNoInteractions(executor);
     }

@@ -6,10 +6,16 @@ import agent_backend.tool.result.ToolResult;
 
 /** One model turn and all its tool results. */
 public class AgentStep {
+    private final String stepId;
+    private final int stepNumber;
     private final LlmDecision decision;
     private final List<ToolResult<?>> toolResults;
 
-    public AgentStep(LlmDecision decision, List<ToolResult<?>> toolResults) {
+    public AgentStep(String stepId, int stepNumber, LlmDecision decision, List<ToolResult<?>> toolResults) {
+        Assert.hasText(stepId, "stepId must not be blank");
+        Assert.isTrue(stepNumber > 0, "stepNumber must be positive");
+        this.stepId = stepId;
+        this.stepNumber = stepNumber;
         Assert.notNull(decision, "decision must not be null");
         this.decision = decision;
         this.toolResults = List.copyOf(toolResults);
@@ -21,6 +27,8 @@ public class AgentStep {
         }
     }
 
+    public String getStepId() { return stepId; }
+    public int getStepNumber() { return stepNumber; }
     public LlmDecision getDecision() { return decision; }
     public List<ToolResult<?>> getToolResults() { return toolResults; }
 }

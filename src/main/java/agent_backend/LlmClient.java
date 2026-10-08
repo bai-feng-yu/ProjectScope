@@ -45,7 +45,7 @@ public class LlmClient {
         this.restClient = RestClient.create(baseUrl);
     }
 
-    public LlmDecision decide(AgentState agentState) {
+    public Map<String, Object> request(AgentState agentState) {
         validateConfiguration();
 
         Map<String, Object> request = new LinkedHashMap<>();
@@ -67,7 +67,7 @@ public class LlmClient {
                 .retrieve()
                 .body(Map.class);
 
-        return parseDecision(response);
+        return response;
     }
 
     private List<Map<String, Object>> buildMessages(AgentState state) {
@@ -114,7 +114,7 @@ public class LlmClient {
     }
 
     @SuppressWarnings("unchecked")
-    private LlmDecision parseDecision(Map<String, Object> response) {
+    LlmDecision parseDecision(Map<String, Object> response) {
         if (response == null) {
             throw new IllegalStateException("LLM returned an empty response");
         }

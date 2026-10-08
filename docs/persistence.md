@@ -1,0 +1,178 @@
+# MySQL 持久化与任务接口：阶段 1–3
+
+已提供数据源、Flyway 自动迁移、三张表及对应的只读 Java record/状态枚举。
+阶段 2 已将 Runner 接入 MySQL。阶段 3 将 HTTP 接口拆为提交、详情查询和步骤查询，
+提交后由本机有界线程池执行；数据库同时记录工具轮次、失败轮次和最终回答轮次。
+数据库轮询调度和崩溃恢复留到后续阶段。
+
+## 启动配置
+
+使用 MySQL 8.4 或更高兼容版本。先创建空数据库 `agent_backend`（utf8mb4）及应用账号，
+为账号授予该数据库的建表、修改表、创建索引、外键和读写权限。
+Flyway 创建表，不负责创建 MySQL 实例、数据库或账号。
+
+在 PowerShell 设置以下环境变量后启动：
+
+```powershell
+$env:DB_URL='jdbc:mysql://localhost:3306/agent_backend?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true'
+$env:DB_USERNAME='agent_backend'
+$env:DB_PASSWORD='<数据库密码>'
+.\mvnw.cmd spring-boot:run
+```
+
+也可以复制 `src/main/resources/application-local.example.properties` 为已被 Git 忽略的
+`application-local.properties`，填入真实配置并启用 `local` profile。
+连接池上限通过 `DB_POOL_SIZE` 配置，默认 10。
+正常启动现在需要可连接的 MySQL；连接或迁移失败时启动失败。
+
+Spring Boot 4 使用 `spring-boot-starter-flyway` 接入自动迁移，MySQL 支持由 `flyway-mysql` 提供，
+版本均由 Spring Boot 管理：[官方说明](https://docs.spring.io/spring-boot/how-to/data-initialization.html)。
+首次启动执行 `V1__create_task_tables.sql` 并生成 `flyway_schema_history`。
+后续迁移新增 `V2__...sql` 等文件，不修改已应用的 V1。禁用 Flyway clean，不自动 baseline 已有表。
+
+## 数据约定
+
+| 表 | 记录含义 | 主要约束 |
+|---|---|---|
+| `agent_task` | 一次用户任务 | task_id 主键；status + created_at 索引用于后续领取 |
+| `agent_step` | 一次模型请求，包括最终回答轮次 | task_id + step_number 唯一；关联 Task |
+| `agent_tool_call` | 一次工具调用 | step_id + call_order 唯一；step_id + tool_call_id 唯一；关联 Step |
+
+应用生成 UUID 字符串作为 taskId、stepId、invocationId。
+toolCallId 原样保留模型协议 ID，只在同一 Step 内唯一，不作为全局主键。
+step_number、call_order 均从 1 开始，查询时必须显式排序。
+外键禁止删除仍有下级记录的父记录，不自动级联删除历史。
+
+任务输入和最终答案使用 LONGTEXT；模型完整响应、调用参数和结果使用 JSON。
+model_response 在模型响应前可以为空；result 在调用尚未完成或结果未知时可以为空。
+结果 JSON 保留 ToolSuccess/ToolFailure 结构，failure_reason 保存执行中断等原因。
+JSON 列验证 JSON 语法；工具参数的 Schema 验证仍由 ToolCall 负责。
+
+DATETIME(6) 和 Java LocalDateTime 均按 UTC 解释。连接参数强制 MySQL 会话使用 UTC；
+如自定义 DB_URL，保留时间参数。业务代码后续生成时间时也必须使用 UTC。
+
+## 状态与写入约束
+
+- Task：PENDING → RUNNING → COMPLETED / FAILED；PENDING 在明确无法执行时也可失败。
+- Step：RUNNING → COMPLETED / FAILED。
+- Call：PENDING → RUNNING → SUCCEEDED / FAILED / UNKNOWN；未开始的调用中止时可标 FAILED。
+- COMPLETED、SUCCEEDED、FAILED、UNKNOWN 都是各自状态域内的终态。
+- UNKNOWN 表示可能已经产生副作用但结果未确认，不允许自动重试。
+
+数据库 CHECK 约束目前只限制合法状态值和正序号，不负责判断旧状态到新状态的转换。
+Store 通过带预期旧状态的条件 UPDATE 限制转换，检查影响行数；
+终态禁止继续修改。Java record 是数据库快照，不提供执行或状态转换逻辑。
+AgentState 保留运行时状态；TaskStore 另外记录创建后的 PENDING 状态。
+Worker 身份、心跳、租约及相应索引留到阶段 5 以新迁移增加。
+
+## 验证
+
+```powershell
+.\mvnw.cmd test
+.\mvnw.cmd '-Dtest=MySqlMigrationTests' test
+```
+
+原有工具测试单独排除数据源自动配置，不访问开发数据库。
+MySqlMigrationTests 使用 Testcontainers 创建独立的 MySQL 8.4 临时容器，验证自动迁移、重复启动、
+唯一约束、外键、合法状态、JSON 及 Unicode 存储。需要 Docker 服务及镜像下载能力；
+Docker 不可用时这组测试会明确显示 skipped，不能视为已完成 MySQL 验证。
+
+## 同步持久化执行顺序
+
+```text
+TaskStore.create(PENDING) → start(RUNNING)
+→ StepStore.create(RUNNING)
+→ LlmClient.request
+→ StepStore.saveResponse（完整原始响应）
+→ LlmClient.parseDecision（含截断保护）
+→ ToolInvocationStore.createBatch（整个批次在一个短事务中插入）
+→ 每次调用：start → ToolCall → finish（逐条提交）
+→ StepStore.complete
+→ 下一轮，或 TaskStore.complete
+```
+
+最终答案轮次也会创建并完成 Step；网络失败时该 Step 保留空 model_response。
+截断/参数 JSON 解析异常时保留原始模型响应，但不注册或执行任何工具调用。
+ToolFailure 会作为调用 FAILED 写入 result，之后继续执行本轮其他调用和下一轮模型请求。
+工具失败本身不会直接导致整个任务失败。
+
+调用结果必须成功保存后才执行下一个工具。外部请求和工具执行期间不持有数据库事务；
+Store 的单条更新自动提交，createBatch 的短事务保证插入中途失败不会留下半个批次。
+终态更新不能重复调用；重复写入或 ID 不匹配会抛出状态冲突并停止执行。
+
+## 异常与存储故障
+
+Runner 异常或轮次耗尽时尝试保存 Task FAILED 和原因；当前失败 Step 也会收尾。
+调用清理只更新 PENDING/RUNNING：PENDING → FAILED，RUNNING → UNKNOWN，已保存结果保持不变。
+UNKNOWN 不会自动重试。后续工具异常不会撤销此前已提交的工具结果。
+
+如果数据库不可用，系统无法保证失败原因一定落库。Runner 会停止继续调用工具并尝试各项清理，
+仍不可写入时在日志和响应 failureReason 中标明 `Failure persistence incomplete`。
+创建 Task 本身失败时不会请求模型。内部同步 run 返回的 taskId 可能没有对应数据库记录；
+HTTP 提交接口在这种情况下返回 503，不返回接收成功响应。
+结果提交后连接断开等情况也可能造成客户端无法确认提交结果，不进行自动重试。
+进程崩溃后的 RUNNING 扫描仍属于阶段 5，不在此阶段自动恢复。
+
+MySqlMigrationTests 另外覆盖 Store 的终态保护、批次插入回滚、完整运行、部分执行失败、
+原始截断响应保存以及步数耗尽。无 Docker 时这些检查会跳过；单元测试仍验证写入顺序、
+写库失败停止执行以及失败收尾降级。
+
+## 阶段 3：提交与查询 API
+
+旧的 `POST /tasks` 同步结果响应已替换为 `202 Accepted`，客户端应改为轮询查询。
+
+```http
+POST /tasks
+Content-Type: application/json
+
+{"task":"计算 1 + 2"}
+```
+
+```http
+HTTP/1.1 202 Accepted
+Location: /tasks/<taskId>
+
+{"taskId":"<UUID>","status":"PENDING"}
+```
+
+`PENDING` 表示接收时的初始状态；Worker 可能在响应发送前就已开始执行。
+`202` 只表示接收成功，不表示任务最终成功。
+
+| 接口 | 返回内容 |
+|---|---|
+| `GET /tasks/{taskId}` | taskId、task、status、finalAnswer、failureReason、创建/开始/结束/更新时间 |
+| `GET /tasks/{taskId}/steps` | 按 stepNumber 排序的数组，每轮包含按 callOrder 排序的 calls、原始模型响应及失败原因 |
+
+查询直接读取 MySQL，不依赖 AgentState 或后台线程。进程重启后仍可查询历史记录。
+步骤中可以出现正在执行的调用、已完成调用和失败轮次；任务刚提交时 steps 为 `[]`。
+参数、原始响应和结果作为 JSON 对象/数组返回，不是二次编码的 JSON 字符串。
+对外时间统一为 UTC ISO-8601（例如 `2026-10-08T01:02:03Z`）。
+单个查询在只读事务内读取；MySQL 默认 REPEATABLE READ 隔离级别下使用一致性快照。
+详情与步骤是两次独立请求，轮询期间状态可能变化。
+
+错误约定：
+
+- 缺失/空白 task、非法 JSON、非法 taskId 格式：400。
+- 合法 taskId 对应任务不存在：404。
+- 数据库存储操作失败：503，code 为 `TASK_STORAGE_UNAVAILABLE`。
+- 后台执行器容量耗尽或关闭：503，code 为 `TASK_SUBMISSION_REJECTED`，返回已创建的 taskId；
+  服务尝试将该任务标为 FAILED。若该次写库也失败，用返回的 ID 查询实际持久化状态。
+
+## 当前后台执行边界
+
+`TaskService.submit` 先通过单条 INSERT 提交 PENDING 任务，再调用 `TaskDispatcher`。
+它声明 `Propagation.NEVER`，避免外层事务导致 Worker 读取尚未提交的任务。
+`LocalTaskDispatcher` 在线程池中调用 `AgentRunner.runExisting(taskId)`，不会新建第二条 Task。
+Runner 通过 PENDING → RUNNING 条件更新取得执行资格，未取得资格不改写其他执行者的任务状态。
+Runner 的同步 `run(task)` 仍可供内部调用；HTTP 提交已不使用该路径。
+
+默认同时执行 2 个任务，队列容量 32，可通过 `AGENT_EXECUTOR_WORKERS` 和
+`AGENT_EXECUTOR_QUEUE_CAPACITY` 调整。队列满时拒绝，不在 HTTP 请求线程中执行工具。
+
+当前数据库写入与本机入队不是原子操作。进程在两者之间崩溃，或执行前读取数据库失败，
+可能留下 PENDING；执行中崩溃可能留下 RUNNING。此阶段不自动恢复执行，
+阶段 4 的数据库轮询领取及阶段 5 的租约恢复负责补齐这些能力。
+
+TaskApiTests 验证 HTTP 契约、输入校验、数据库查询、错误响应；LocalTaskDispatcherTests
+验证后台线程执行及容量拒绝。TaskApiMySqlTests 用真实 MySQL 验证完整提交、执行、查询链路，
+无 Docker 时明确跳过。

@@ -2,12 +2,14 @@ package agent_backend;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import agent_backend.tool.AgentTool;
 import org.springframework.util.Assert;
 
 public class AgentState {
     private final List<AgentStep> steps;
+    private final String taskId;
     private final String task;
     private String finalAnswer;
     private String failureReason;
@@ -17,6 +19,12 @@ public class AgentState {
     public enum AgentStateType { COMPLETED, RUNNING, FAILED }
 
     AgentState(String task) {
+        this(UUID.randomUUID().toString(), task);
+    }
+
+    AgentState(String taskId, String task) {
+        Assert.hasText(taskId, "taskId must not be blank");
+        this.taskId = taskId;
         this.task = task;
         this.agentStateType = AgentStateType.RUNNING;
         this.steps = new ArrayList<>();
@@ -30,6 +38,7 @@ public class AgentState {
         Assert.notNull(step, "step must not be null");
         steps.add(step);
     }
+    public String getTaskId() { return taskId; }
     public String getTask() { return task; }
     public String getFinalAnswer() { return finalAnswer; }
     public String getFailureReason() { return failureReason; }
