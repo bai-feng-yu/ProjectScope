@@ -46,6 +46,21 @@ public class TaskService {
     @Transactional(readOnly = true)
     public List<TaskStepResponse> getSteps(String taskId) {
         requireTask(taskId);
+        return readSteps(taskId);
+    }
+
+    // 由订阅服务通过 Spring 代理调用，查询在同一个短只读事务内完成。
+    // 在 MySQL 默认 REPEATABLE READ 下，多次普通查询读取同一一致性视图。
+    // 方法返回时事务已经结束，SSE 连接存续和网络发送不会一直占用该事务。
+    @Transactional(readOnly = true)
+    public TaskSnapshot getSnapshot(String taskId) {
+        var task = TaskDetailResponse.from(requireTask(taskId));
+        return new TaskSnapshot(task.taskId(), task.task(), task.status(), task.finalAnswer(),
+                task.failureReason(), task.createdAt(), task.startedAt(), task.finishedAt(), readSteps(taskId));
+    }
+
+    private List<TaskStepResponse> readSteps(String taskId) {
+        // 普通查询接口与 SSE 共用组装逻辑；此私有方法沿用外层公共方法开启的事务。
         return steps.findByTask(taskId).stream().map(step -> TaskStepResponse.from(step,
                 invocations.findByStep(step.stepId()).stream()
                         .map(call -> ToolInvocationResponse.from(call, mapper)).toList(), mapper)).toList();
