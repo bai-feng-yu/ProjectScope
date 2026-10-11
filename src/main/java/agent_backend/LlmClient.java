@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -36,13 +37,13 @@ public class LlmClient {
 
     public LlmClient(ObjectMapper objectMapper, ToolDescriptorFactory descriptorFactory,
             @Value("${llm.api-key:}") String apiKey,
-            @Value("${llm.base-url:https://api.openai.com/v1}") String baseUrl,
+            @Qualifier("llmRestClient") RestClient restClient,
             @Value("${llm.model:}") String model) {
         this.objectMapper = objectMapper;
         this.descriptorFactory = descriptorFactory;
         this.apiKey = apiKey;
         this.model = model;
-        this.restClient = RestClient.create(baseUrl);
+        this.restClient = restClient;
     }
 
     public Map<String, Object> request(AgentState agentState) {
@@ -58,8 +59,9 @@ public class LlmClient {
             request.put("tool_choice", "auto");
         }
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> response = restClient.post()
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restClient.post()
                 .uri("/chat/completions")
                 .contentType(MediaType.APPLICATION_JSON)
                 .header("Authorization", "Bearer " + apiKey)
@@ -67,7 +69,22 @@ public class LlmClient {
                 .retrieve()
                 .body(Map.class);
 
-        return response;
+            return response;
+        } catch (org.springframework.web.client.RestClientException exception) {
+            // Body conversion may wrap an I/O timeout, so inspect the entire cause chain.
+            for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+                if (cause instanceof org.apache.hc.core5.http.ConnectionRequestTimeoutException) {
+                    throw new LlmTimeoutException(LlmTimeoutException.Phase.CONNECTION_POOL, exception);
+                }
+                if (cause instanceof org.apache.hc.client5.http.ConnectTimeoutException) {
+                    throw new LlmTimeoutException(LlmTimeoutException.Phase.CONNECT, exception);
+                }
+                if (cause instanceof java.net.SocketTimeoutException) {
+                    throw new LlmTimeoutException(LlmTimeoutException.Phase.RESPONSE_READ, exception);
+                }
+            }
+            throw exception;
+        }
     }
 
     private List<Map<String, Object>> buildMessages(AgentState state) {

@@ -16,7 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 class LlmClientProtocolTests {
     private final LlmClient client = new LlmClient(JsonMapper.builder().build(),
-            new ToolDescriptorFactory(), "test-key", "http://localhost", "test-model");
+            new ToolDescriptorFactory(), "test-key", org.springframework.web.client.RestClient.create("http://localhost"), "test-model");
 
     @Test
     void modelToolCallsWithoutIdsAreRejected() {
