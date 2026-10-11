@@ -46,7 +46,9 @@ import org.testcontainers.mysql.MySQLContainer;
 class MySqlMigrationTests {
     @Container
     static final MySQLContainer mysql = new MySQLContainer("mysql:8.4")
-            .withDatabaseName("agent_backend_test");
+            .withDatabaseName("agent_backend_test")
+            // Fault-injection triggers are confined to this disposable database.
+            .withCommand("--log-bin-trust-function-creators=1");
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
@@ -68,7 +70,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("3", flyway.info().current().getVersion().getVersion());
+        assertEquals("4", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()
@@ -325,6 +327,7 @@ class MySqlMigrationTests {
                     + (second.get(5, java.util.concurrent.TimeUnit.SECONDS) ? 1 : 0));
         }
         assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM run_attempt WHERE run_id = ?", Integer.class, taskId));
     }
 
 
@@ -344,7 +347,7 @@ class MySqlMigrationTests {
         invocations.start(owner, ids.get(0));
         invocations.finish(owner, ids.get(0), new ToolSuccess<>("one", "test", "saved"));
         invocations.start(owner, ids.get(1));
-        jdbc.update("UPDATE agent_task SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE task_id = ?", taskId);
+        jdbc.update("UPDATE run_attempt SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE run_id = ?", taskId);
         assertFalse(tasks.renew(owner, 60000));
         assertThrows(agent_backend.persistence.LeaseLostException.class,
                 () -> invocations.finish(owner, ids.get(1), new ToolSuccess<>("two", "test", "late")));
@@ -353,6 +356,8 @@ class MySqlMigrationTests {
         assertTrue(tasks.recoverExpired(taskId));
         assertFalse(tasks.recoverExpired(taskId));
         assertEquals(TaskStatus.FAILED, tasks.find(taskId).orElseThrow().status());
+        assertNull(tasks.find(taskId).orElseThrow().activeAttemptId());
+        assertEquals("EXPIRED", jdbc.queryForObject("SELECT status FROM run_attempt WHERE run_id = ?", String.class, taskId));
         assertTrue(tasks.find(taskId).orElseThrow().failureReason().contains("lease expired"));
         assertEquals(StepStatus.FAILED, steps.findByTask(taskId).getFirst().status());
         var calls = invocations.findByStep(stepId);
@@ -393,13 +398,15 @@ class MySqlMigrationTests {
         String callId = invocations.createBatch(owner, stepId,
                 List.of(new ToolInvocation("call", "test", Map.of()))).getFirst();
         invocations.start(owner, callId);
-        jdbc.update("UPDATE agent_task SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE task_id = ?", taskId);
+        jdbc.update("UPDATE run_attempt SET lease_until = UTC_TIMESTAMP(6) - INTERVAL 1 SECOND WHERE run_id = ?", taskId);
         jdbc.execute("CREATE TRIGGER reject_recovery BEFORE UPDATE ON agent_task FOR EACH ROW BEGIN "
                 + "IF NEW.task_id = '" + taskId + "' AND NEW.status = 'FAILED' THEN "
                 + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced failure'; END IF; END");
         try {
             assertThrows(org.springframework.dao.DataAccessException.class, () -> tasks.recoverExpired(taskId));
             assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
+            assertEquals("RUNNING", jdbc.queryForObject("SELECT status FROM run_attempt WHERE run_id = ?", String.class, taskId));
+            assertEquals(owner.attemptId(), tasks.find(taskId).orElseThrow().activeAttemptId());
             assertEquals(StepStatus.RUNNING, steps.findByTask(taskId).getFirst().status());
             assertEquals(ToolCallStatus.RUNNING, invocations.findByStep(stepId).getFirst().status());
         } finally {
@@ -421,6 +428,68 @@ class MySqlMigrationTests {
     private AgentRunner runner(LlmClient llm, ToolCall tools, int limit) {
         return new AgentRunner(llm, new SequentialToolBatchExecutor(tools, invocations), registry,
                 tasks, steps, invocations, leases, limit);
+    }
+
+    @Test
+    void attemptHasIndependentLifecycleAndScopedHistory() {
+        String taskId = id(), user = "a".repeat(64);
+        tasks.createOwned(taskId, "task", user);
+        var claim = tasks.start(new TaskLease(taskId, id(), id(), 999), 60000);
+        assertEquals(1, claim.fenceToken()); // Database, not caller, allocates the token.
+        var running = tasks.find(taskId).orElseThrow();
+        assertEquals(claim.attemptId(), running.activeAttemptId());
+        assertEquals(1, running.fenceToken());
+        assertEquals("RUNNING", tasks.findAttempts(taskId, user).getFirst().status());
+        assertTrue(tasks.findAttempts(taskId, "b".repeat(64)).isEmpty());
+        var wrongFence = new TaskLease(taskId, claim.workerId(), claim.attemptId(), 2);
+        var wrongAttempt = new TaskLease(taskId, claim.workerId(), id(), claim.fenceToken());
+        for (var stale : List.of(wrongFence, wrongAttempt)) {
+            assertFalse(tasks.renew(stale, 60000));
+            assertThrows(agent_backend.persistence.LeaseLostException.class, () -> steps.create(stale, id(), 1));
+            assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.complete(stale, "wrong"));
+        }
+        tasks.complete(claim, "done");
+        var completed = tasks.find(taskId).orElseThrow();
+        assertNull(completed.activeAttemptId());
+        assertEquals(claim.workerId(), completed.workerId()); // Legacy DTO projects last attempt.
+        var attempt = tasks.findAttempts(taskId, user).getFirst();
+        assertEquals("SUCCEEDED", attempt.status());
+        assertTrue(attempt.endedAt() != null);
+        assertFalse(tasks.renew(claim, 60000));
+        assertThrows(IllegalStateException.class, () -> tasks.start(new TaskLease(taskId, id()), 60000));
+        assertEquals(1, tasks.findAttempts(taskId, user).size());
+    }
+
+    @Test
+    void failedClaimRollsBackInsertedAttemptAndFence() {
+        String taskId = createTask();
+        jdbc.execute("CREATE TRIGGER reject_claim BEFORE UPDATE ON agent_task FOR EACH ROW BEGIN "
+                + "IF NEW.task_id = '" + taskId + "' AND NEW.status = 'RUNNING' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced claim failure'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.start(new TaskLease(taskId, id()), 60000));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM run_attempt WHERE run_id = ?", Integer.class, taskId));
+            var run = tasks.find(taskId).orElseThrow();
+            assertEquals(TaskStatus.PENDING, run.status());
+            assertEquals(0, run.fenceToken());
+            assertNull(run.activeAttemptId());
+        } finally { jdbc.execute("DROP TRIGGER reject_claim"); }
+    }
+
+    @Test
+    void completionRollsBackRunWhenAttemptFinalizationFails() {
+        String taskId = createTask();
+        var claim = tasks.start(new TaskLease(taskId, id()), 60000);
+        jdbc.execute("CREATE TRIGGER reject_attempt_end BEFORE UPDATE ON run_attempt FOR EACH ROW BEGIN "
+                + "IF NEW.run_id = '" + taskId + "' AND NEW.status = 'SUCCEEDED' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'forced attempt failure'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.complete(claim, "done"));
+            assertEquals(TaskStatus.RUNNING, tasks.find(taskId).orElseThrow().status());
+            assertEquals(claim.attemptId(), tasks.find(taskId).orElseThrow().activeAttemptId());
+            assertNull(tasks.find(taskId).orElseThrow().finalAnswer());
+        } finally { jdbc.execute("DROP TRIGGER reject_attempt_end"); }
+        tasks.complete(claim, "done");
     }
 
     private Map<String, Object> toolResponse(int count) {

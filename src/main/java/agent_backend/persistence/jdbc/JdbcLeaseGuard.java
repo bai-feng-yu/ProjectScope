@@ -18,9 +18,16 @@ public class JdbcLeaseGuard {
         Assert.state(TransactionSynchronizationManager.isActualTransactionActive(), "Lease guard requires a transaction");
         var rows = jdbc.queryForList("""
                 SELECT task_id FROM agent_task
-                WHERE task_id = ? AND worker_id = ? AND status = 'RUNNING' AND lease_until > UTC_TIMESTAMP(6)
+                WHERE task_id = ? AND active_attempt_id = ? AND fence_token = ? AND status = 'RUNNING'
                 FOR UPDATE
-                """, String.class, lease.taskId(), lease.workerId());
+                """, String.class, lease.taskId(), lease.attemptId(), lease.fenceToken());
         if (rows.isEmpty()) throw new LeaseLostException(lease.taskId());
+        // Run first, Attempt second: same order for renew, recovery and every Step/Tool write.
+        var attempts = jdbc.queryForList("""
+                SELECT attempt_id FROM run_attempt WHERE run_id = ? AND attempt_id = ?
+                    AND fence_token = ? AND worker_id = ? AND status = 'RUNNING'
+                    AND lease_until > UTC_TIMESTAMP(6) FOR UPDATE
+                """, String.class, lease.taskId(), lease.attemptId(), lease.fenceToken(), lease.workerId());
+        if (attempts.isEmpty()) throw new LeaseLostException(lease.taskId());
     }
 }

@@ -9,7 +9,8 @@ public interface TaskStore {
     void createOwned(String taskId, String input, String userId);
     Optional<TaskRecord> findOwned(String taskId, String userId);
     Optional<String> findOwner(String taskId);
-    void start(TaskLease lease, long durationMs);
+    TaskLease start(TaskLease lease, long durationMs);
+    List<agent_backend.persistence.model.RunAttemptRecord> findAttempts(String taskId, String userId);
     boolean renew(TaskLease lease, long durationMs);
     void complete(TaskLease lease, String answer);
     void fail(TaskLease lease, String reason);

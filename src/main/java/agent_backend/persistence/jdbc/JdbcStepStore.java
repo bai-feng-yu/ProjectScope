@@ -28,9 +28,9 @@ public class JdbcStepStore implements StepStore {
     public void create(TaskLease lease, String stepId, int number) {
         leases.lock(lease);
         JdbcStoreSupport.requireOne(jdbc.update("""
-                INSERT INTO agent_step (step_id, task_id, step_number)
-                SELECT ?, task_id, ? FROM agent_task WHERE task_id = ? AND status = 'RUNNING'
-                """, stepId, number, lease.taskId()), "create step", stepId);
+                INSERT INTO agent_step (step_id, task_id, step_number, created_attempt_id)
+                SELECT ?, task_id, ?, ? FROM agent_task WHERE task_id = ? AND status = 'RUNNING'
+                """, stepId, number, lease.attemptId(), lease.taskId()), "create step", stepId);
     }
 
     @Override

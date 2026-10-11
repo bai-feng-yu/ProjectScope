@@ -32,8 +32,8 @@ public class TaskLeaseManager {
     }
 
     public LeaseSession acquire(String taskId) {
-        TaskLease lease = new TaskLease(taskId, UUID.randomUUID().toString());
-        tasks.start(lease, durationMs);
+        TaskLease lease = tasks.start(new TaskLease(taskId, UUID.randomUUID().toString(),
+                UUID.randomUUID().toString(), 1), durationMs);
         LeaseSession session = new LeaseSession(lease);
         try {
             session.heartbeat(scheduler.scheduleWithFixedDelay(() -> {

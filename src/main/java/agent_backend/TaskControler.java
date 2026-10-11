@@ -41,4 +41,9 @@ public class TaskControler {
     public List<TaskStepResponse> steps(@PathVariable UUID taskId) {
         return taskService.getSteps(taskId.toString());
     }
+
+    @GetMapping("/{taskId}/attempts")
+    public List<agent_backend.task.RunAttemptResponse> attempts(@PathVariable UUID taskId) {
+        return taskService.getAttempts(taskId.toString());
+    }
 }

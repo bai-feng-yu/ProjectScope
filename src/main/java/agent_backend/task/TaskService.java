@@ -45,6 +45,18 @@ public class TaskService {
     }
 
     @Transactional(readOnly = true)
+    public RunDetailResponse getRun(String runId) {
+        return RunDetailResponse.from(requireTask(runId));
+    }
+
+    @Transactional(readOnly = true)
+    public List<RunAttemptResponse> getAttempts(String runId) {
+        requireTask(runId);
+        return tasks.findAttempts(runId, TaskIdentity.current().userId()).stream()
+                .map(RunAttemptResponse::from).toList();
+    }
+
+    @Transactional(readOnly = true)
     public List<TaskStepResponse> getSteps(String taskId) {
         requireTask(taskId);
         return readSteps(taskId);

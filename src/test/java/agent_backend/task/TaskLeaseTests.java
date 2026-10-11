@@ -23,6 +23,7 @@ class TaskLeaseTests {
 
     @BeforeEach
     void setup() {
+        when(tasks.start(any(), anyLong())).thenAnswer(invocation -> invocation.getArgument(0));
         when(executor.scheduleWithFixedDelay(any(), anyLong(), anyLong(), any())).thenAnswer(invocation -> future);
     }
 
@@ -44,6 +45,20 @@ class TaskLeaseTests {
         session.close();
         verify(future).cancel(false);
         assertThrows(LeaseLostException.class, session::check);
+    }
+
+    @Test
+    void carriesDatabaseAllocatedFenceIntoHeartbeatAndExecution() {
+        when(tasks.start(any(), anyLong())).thenAnswer(invocation -> {
+            agent_backend.persistence.TaskLease request = invocation.getArgument(0);
+            return new agent_backend.persistence.TaskLease(request.taskId(), request.workerId(), request.attemptId(), 7);
+        });
+        var session = manager.acquire("task");
+        assertEquals(7, session.lease().fenceToken());
+        when(tasks.renew(session.lease(), 60000)).thenReturn(true);
+        heartbeat().run();
+        verify(tasks).renew(session.lease(), 60000);
+        session.close();
     }
 
     @Test

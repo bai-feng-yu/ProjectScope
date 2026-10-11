@@ -34,7 +34,7 @@ class TaskApiTests {
     void setup() {
         TestIdentity.login("alice");
         var service = new TaskService(tasks, steps, invocations, mapper);
-        mvc = MockMvcBuilders.standaloneSetup(new TaskControler(service))
+        mvc = MockMvcBuilders.standaloneSetup(new TaskControler(service), new RunController(service))
                 .setControllerAdvice(new TaskApiExceptionHandler()).build();
     }
 
@@ -49,6 +49,27 @@ class TaskApiTests {
         assertEquals("/tasks/" + id, response.getHeader("Location"));
         verify(tasks).createOwned(id, "hello", agent_backend.security.TaskIdentity.current().userId());
         verifyNoInteractions(steps, invocations);
+    }
+
+    @Test
+    void runApiCreatesExecutionAndExposesAttemptHistory() throws Exception {
+        var response = mvc.perform(post("/runs").contentType(MediaType.APPLICATION_JSON)
+                .content("{\"task\":\"hello\"}"))
+                .andExpect(status().isAccepted()).andReturn().getResponse();
+        String id = mapper.readTree(response.getContentAsString()).get("runId").asText();
+        assertEquals("/runs/" + id, response.getHeader("Location"));
+        String user = agent_backend.security.TaskIdentity.current().userId();
+        when(tasks.findOwned(id, user)).thenReturn(Optional.of(new TaskRecord(id, "hello", TaskStatus.RUNNING,
+                null, null, null, null, null, null, "worker", null, null, "attempt", 1)));
+        when(tasks.findAttempts(id, user)).thenReturn(List.of(new RunAttemptRecord(id, "attempt", 1, 1,
+                "worker", "RUNNING", LocalDateTime.of(2026, 10, 11, 0, 0), null, null, null, null, false)));
+        mvc.perform(get("/runs/{id}", id)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.runId").value(id)).andExpect(jsonPath("$.activeAttemptId").value("attempt"))
+                .andExpect(jsonPath("$.fenceToken").value(1));
+        mvc.perform(get("/runs/{id}/attempts", id)).andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].attemptId").value("attempt"))
+                .andExpect(jsonPath("$[0].startedAt").value("2026-10-11T00:00:00Z"));
+        mvc.perform(get("/tasks/{id}/attempts", id)).andExpect(status().isOk());
     }
 
     @Test

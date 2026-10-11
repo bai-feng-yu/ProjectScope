@@ -1,5 +1,7 @@
 # MySQL 持久化与任务接口：阶段 1–5
 
+> 后续变更：V3 增加 [身份与任务归属](authentication.md)；V4 将租约、心跳与 Worker 移至独立 Attempt，详见 [Run / Attempt 实现](run-attempts.md)。下文保留阶段 1–5 的历史说明，旧表结构和租约 SQL 以 V4 文档及当前代码为准。
+
 已提供数据源、Flyway 自动迁移、三张表及对应的只读 Java record/状态枚举。
 阶段 2 已将 Runner 接入 MySQL。阶段 3 将 HTTP 接口拆为提交、详情查询和步骤查询。
 阶段 4 使用 MySQL 保存待执行任务，按本机空闲容量轮询调度；数据库同时记录工具轮次、

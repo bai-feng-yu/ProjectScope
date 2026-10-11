@@ -128,11 +128,13 @@ class SecurityIsolationTests {
                 .andExpect(status().isOk()).andExpect(request().asyncStarted()).andReturn();
         mvc.perform(asyncDispatch(stream)).andExpect(status().isOk());
         clearInvocations(steps, calls);
-        for (String suffix : List.of("", "/steps", "/events")) {
-            mvc.perform(get("/tasks/" + id + suffix).header("Authorization", bob))
+        for (String prefix : List.of("/tasks/", "/runs/")) {
+          for (String suffix : List.of("", "/steps", "/events", "/attempts")) {
+            mvc.perform(get(prefix + id + suffix).header("Authorization", bob))
                     .andExpect(status().isNotFound()).andExpect(request().asyncNotStarted());
-            mvc.perform(get("/tasks/" + UUID.randomUUID() + suffix).header("Authorization", bob))
+            mvc.perform(get(prefix + UUID.randomUUID() + suffix).header("Authorization", bob))
                     .andExpect(status().isNotFound());
+          }
         }
         verifyNoInteractions(steps, calls);
         verify(tasks, never()).find(anyString());
