@@ -31,6 +31,7 @@ public class JdbcStepStore implements StepStore {
                 INSERT INTO agent_step (step_id, task_id, step_number, created_attempt_id)
                 SELECT ?, task_id, ?, ? FROM agent_task WHERE task_id = ? AND status = 'RUNNING'
                 """, stepId, number, lease.attemptId(), lease.taskId()), "create step", stepId);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "model.started", lease.attemptId(), stepId, null, "RUNNING");
     }
 
     @Override
@@ -42,6 +43,7 @@ public class JdbcStepStore implements StepStore {
                 UPDATE agent_step SET model_response = ?
                 WHERE step_id = ? AND task_id = ? AND status = 'RUNNING' AND model_response IS NULL
                 """, mapper.writeValueAsString(response), stepId, lease.taskId()), "save model response", stepId);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "model.completed", lease.attemptId(), stepId, null, "COMPLETED");
     }
 
     @Override
@@ -54,6 +56,7 @@ public class JdbcStepStore implements StepStore {
                   AND NOT EXISTS (SELECT 1 FROM agent_tool_call
                       WHERE step_id = ? AND status IN ('PENDING', 'RUNNING', 'UNKNOWN'))
                 """, stepId, lease.taskId(), stepId), "complete step", stepId);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "step.completed", lease.attemptId(), stepId, null, "COMPLETED");
     }
 
     @Override
@@ -65,6 +68,7 @@ public class JdbcStepStore implements StepStore {
                 UPDATE agent_step SET status = 'FAILED', failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
                 WHERE step_id = ? AND task_id = ? AND status = 'RUNNING'
                 """, reason, stepId, lease.taskId()), "fail step", stepId);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "step.failed", lease.attemptId(), stepId, null, "FAILED");
     }
 
     @Override

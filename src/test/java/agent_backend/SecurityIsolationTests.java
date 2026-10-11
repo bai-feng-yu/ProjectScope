@@ -38,6 +38,7 @@ import tools.jackson.databind.ObjectMapper;
         "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration",
         "spring.flyway.enabled=false", "agent.scheduler.enabled=false"})
 class SecurityIsolationTests {
+    @MockitoBean org.springframework.jdbc.core.JdbcTemplate eventJdbc;
     private static final String ISSUER = "https://identity.example.test";
     private static final RSAKey KEY;
     private static final HttpServer JWKS;

@@ -1,5 +1,7 @@
 # MySQL 持久化与任务接口：阶段 1–5
 
+> V5 更新：Run 持久化事件、同事务写入和可回放 SSE 已实现，见 [run-events.md](run-events.md)。旧 /tasks 快照流保持兼容；/runs 事件流使用新协议。
+
 > 后续变更：V3 增加 [身份与任务归属](authentication.md)；V4 将租约、心跳与 Worker 移至独立 Attempt，详见 [Run / Attempt 实现](run-attempts.md)。下文保留阶段 1–5 的历史说明，旧表结构和租约 SQL 以 V4 文档及当前代码为准。
 
 已提供数据源、Flyway 自动迁移、三张表及对应的只读 Java record/状态枚举。

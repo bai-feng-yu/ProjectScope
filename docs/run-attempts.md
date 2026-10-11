@@ -1,8 +1,10 @@
 # Run / Attempt 实现
 
+> V5 更新：Run 持久化事件、同事务写入和可回放 SSE 已实现，见 [run-events.md](run-events.md)。旧 /tasks 快照流保持兼容；/runs 事件流使用新协议。
+
 ## 范围
 
-现有 agent_task 是一次执行（Run），保留表名、task_id 和 /tasks 接口以兼容已有调用。新增 /runs 接口明确执行语义。持续 TaskDefinition、检查点续跑、自动重试、审批和事件日志尚未实现。
+现有 agent_task 是一次执行（Run），保留表名、task_id 和 /tasks 接口以兼容已有调用。新增 /runs 接口明确执行语义。持续 TaskDefinition、检查点续跑、自动重试和审批尚未实现；事件日志已在 V5 实现。
 
 Run 继续使用 PENDING → RUNNING → COMPLETED / FAILED；PENDING 对应设计文档中的 QUEUED。本期没有重新打开终态 Run 的 API，因此正常 Run 只有一次 Attempt；表结构、递增令牌和查询接口已为后续多次尝试准备。
 
@@ -44,7 +46,7 @@ Attempt.lease_until > 数据库当前时间
 
 所有 Step/Tool/结果写入和心跳续租都经过这一边界。旧 Attempt、错误 token、过期租约和终态执行不能继续写入。续租只更新 Attempt，不再修改 Run 的心跳列；旧 /tasks 详情中的租约字段由最新 Attempt 投影，终态后仍可查看最后执行者。
 
-成功：同事务写 Run COMPLETED、Attempt SUCCEEDED 并清空活动指针。失败：同事务收尾未完成子记录，写 Run FAILED、Attempt FAILED。最终模型 Step 的已有提交边界暂保持不变；状态与事件统一提交留待下一批。
+成功：同事务写 Run COMPLETED、Attempt SUCCEEDED 并清空活动指针。失败：同事务收尾未完成子记录，写 Run FAILED、Attempt FAILED。最终模型 Step 的已有提交边界保持不变；V5 中每次状态写入与对应事件同事务提交。
 
 恢复器首先锁 Run，再锁其活动 Attempt 并重新检查租约。过期时同事务将运行中工具标 UNKNOWN、未开始工具标 FAILED、未完成 Step/Run 标 FAILED、Attempt 标 EXPIRED，清空活动指针。已保存结果不覆盖；任何写入失败整笔回滚。重复恢复无效果。
 
@@ -60,7 +62,7 @@ Attempt.lease_until > 数据库当前时间
 | GET /runs/{runId} | Run 状态、输入、结果、activeAttemptId、fenceToken |
 | GET /runs/{runId}/attempts | 按 attemptNumber 排序的历史，含状态、时间、结束原因与 legacy 标记 |
 | GET /runs/{runId}/steps | 现有步骤协议 |
-| GET /runs/{runId}/events | 现有快照 SSE 的别名，payload 仍使用 taskId；没有事件回放 |
+| GET /runs/{runId}/events | V5 可回放 SSE；首次快照含序号，重连通过 Last-Event-ID 或 after 补发 |
 | GET /tasks/{taskId}/attempts | 兼容路径查询同一份历史 |
 
 无任务或不属于当前用户统一 404。已接受但尚未领取的 Run 返回空 Attempt 列表。时间字段使用 UTC ISO-8601。历史列表当前不分页，因为本期没有多次自动尝试；引入重试时需增加分页与上限。

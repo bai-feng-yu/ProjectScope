@@ -10,7 +10,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 // 同时覆盖普通任务接口和 SSE 建连前的数据库错误；流建立后的错误由订阅服务关闭连接。
-@RestControllerAdvice(assignableTypes = {TaskControler.class, TaskEventController.class})
+@RestControllerAdvice(assignableTypes = {TaskControler.class, TaskEventController.class,
+        RunController.class, RunEventController.class})
 public class TaskApiExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(TaskApiExceptionHandler.class);
     public record ApiError(String code, String message, String taskId) {}

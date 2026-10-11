@@ -67,10 +67,124 @@ class MySqlMigrationTests {
     @Autowired ToolInvocationStore invocations;
     @Autowired LlmClient client;
     @Autowired ToolRegistry registry;
+    @Autowired agent_backend.task.RunEventQuery eventQuery;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @Test void creationAndTerminalStateRollbackWhenEventInsertFails() {
+        String run = id();
+        jdbc.execute("CREATE TRIGGER reject_event BEFORE INSERT ON run_event FOR EACH ROW BEGIN "
+                + "IF NEW.run_id='" + run + "' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='event rejected'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.createOwned(run, "private", "a".repeat(64)));
+            assertTrue(tasks.find(run).isEmpty());
+        } finally { jdbc.execute("DROP TRIGGER reject_event"); }
+        tasks.createOwned(run, "private", "a".repeat(64));
+        var lease = tasks.start(new TaskLease(run, id()), 60000);
+        long before = eventSequence(run);
+        jdbc.execute("CREATE TRIGGER reject_event BEFORE INSERT ON run_event FOR EACH ROW BEGIN "
+                + "IF NEW.run_id='" + run + "' AND NEW.event_type='run.completed' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='event rejected'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.complete(lease, "answer"));
+            assertEquals(TaskStatus.RUNNING, tasks.find(run).orElseThrow().status());
+            assertEquals("RUNNING", tasks.findAttempts(run, "a".repeat(64)).getFirst().status());
+            assertEquals(before, eventSequence(run));
+            assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM run_event WHERE run_id=?", Long.class, run));
+        } finally { jdbc.execute("DROP TRIGGER reject_event"); }
+        tasks.complete(lease, "answer");
+        assertEquals(before + 2, eventSequence(run));
+    }
+
+    @Test void concurrentWritersAllocateContiguousEventsAndRecoveryRecordsChildren() throws Exception {
+        String run = id();
+        tasks.createOwned(run, "input", "a".repeat(64));
+        var lease = tasks.start(new TaskLease(run, id()), 60000);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            var futures = java.util.stream.IntStream.rangeClosed(1, 12)
+                    .mapToObj(number -> pool.submit(() -> steps.create(lease, id(), number))).toList();
+            for (var future : futures) future.get(20, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        String step = steps.findByTask(run).getFirst().stepId();
+        var ids = invocations.createBatch(lease, step, List.of(
+                new ToolInvocation("one", "test", Map.of()), new ToolInvocation("two", "test", Map.of())));
+        invocations.start(lease, ids.getFirst());
+        long beforeHeartbeat = eventSequence(run);
+        assertTrue(tasks.renew(lease, 60000));
+        assertEquals(beforeHeartbeat, eventSequence(run));
+        jdbc.update("UPDATE run_attempt SET lease_until=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE run_id=?", run);
+        assertTrue(tasks.recoverExpired(run));
+        var types = jdbc.queryForList("SELECT event_type FROM run_event WHERE run_id=? ORDER BY seq", String.class, run);
+        assertTrue(types.containsAll(List.of("tool.unknown", "tool.failed", "step.failed", "attempt.expired", "run.failed")));
+        assertEquals("run.failed", types.getLast());
+        var seqs = jdbc.queryForList("SELECT seq FROM run_event WHERE run_id=? ORDER BY seq", Long.class, run);
+        assertEquals(java.util.stream.LongStream.rangeClosed(1, eventSequence(run)).boxed().toList(), seqs);
+        assertFalse(tasks.recoverExpired(run));
+        assertEquals(seqs.size(), eventSequence(run));
+    }
+
+    @Test void persistedReplayIsPagedAuthorizedAndSurvivesNewReader() {
+        var identity = TestIdentity.login("event-owner");
+        try {
+            String run = id();
+            tasks.createOwned(run, "private input", identity.userId());
+            var lease = tasks.start(new TaskLease(run, id()), 60000);
+            for (int i = 1; i <= 102; i++) steps.create(lease, id(), i);
+            tasks.fail(lease, "private failure");
+            var page = eventQuery.after(run, identity, 0);
+            assertEquals(100, page.events().size());
+            assertTrue(page.terminal());
+            assertEquals(1, page.events().getFirst().seq());
+            var resumed = eventQuery.after(run, identity, 100);
+            assertEquals(101, resumed.events().getFirst().seq());
+            var tail = eventQuery.after(run, identity, 200);
+            assertEquals(page.highWatermark(), tail.events().getLast().seq());
+            assertEquals("run.failed", tail.events().getLast().type());
+            assertFalse(tail.events().toString().contains("private failure"));
+            var snapshot = eventQuery.initial(run, identity);
+            assertEquals(page.highWatermark(), snapshot.seq());
+            assertEquals(TaskStatus.FAILED, snapshot.snapshot().status());
+            var other = TestIdentity.login("someone-else");
+            var denied = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> eventQuery.after(run, other, 0));
+            assertEquals(404, denied.getStatusCode().value());
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> eventQuery.after(run, identity, page.highWatermark() + 1));
+            // A distinct reader instance reconstructs everything from persisted data, not a local queue.
+            var reader = new agent_backend.task.RunEventQuery(jdbc, tasks,
+                    new agent_backend.task.TaskService(tasks, steps, invocations, new tools.jackson.databind.json.JsonMapper()),
+                    new tools.jackson.databind.json.JsonMapper());
+            var tx = new org.springframework.transaction.support.TransactionTemplate(transactions);
+            tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+            assertEquals(tail, tx.execute(status -> reader.after(run, identity, 200)));
+        } finally { TestIdentity.clear(); }
+    }
+
+    @Test void snapshotAndWatermarkRemainInOneRepeatableReadView() throws Exception {
+        var identity = TestIdentity.login("snapshot-owner");
+        try {
+            String run = id();
+            tasks.createOwned(run, "input", identity.userId());
+            var tx = new org.springframework.transaction.support.TransactionTemplate(transactions);
+            tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_REPEATABLE_READ);
+            tx.executeWithoutResult(status -> {
+                var initial = eventQuery.initial(run, identity);
+                java.util.concurrent.CompletableFuture.runAsync(() -> tasks.failPending(run, "failed")).join();
+                assertEquals(initial, eventQuery.initial(run, identity));
+                assertEquals(1, initial.seq());
+                assertEquals(TaskStatus.PENDING, initial.snapshot().status());
+            });
+            assertEquals(2, eventQuery.initial(run, identity).seq());
+            assertEquals(TaskStatus.FAILED, eventQuery.initial(run, identity).snapshot().status());
+        } finally { TestIdentity.clear(); }
+    }
+
+    private long eventSequence(String run) {
+        return jdbc.queryForObject("SELECT last_event_seq FROM agent_task WHERE task_id=?", Long.class, run);
+    }
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("4", flyway.info().current().getVersion().getVersion());
+        assertEquals("5", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()

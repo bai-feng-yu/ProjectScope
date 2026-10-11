@@ -1,5 +1,7 @@
 # Task SSE 快照订阅
 
+> V5 更新：Run 持久化事件、同事务写入和可回放 SSE 已实现，见 [run-events.md](run-events.md)。旧 /tasks 快照流保持兼容；/runs 事件流使用新协议。
+
 先 `POST /tasks` 创建任务，再通过 `GET /tasks/{taskId}/events` 订阅。
 响应为 `text/event-stream`，携带 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`。
 UUID 非法返回 400，任务不存在返回 404，首次读取数据库失败返回 JSON 503。

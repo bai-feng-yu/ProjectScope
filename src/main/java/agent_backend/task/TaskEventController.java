@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
-@RequestMapping({"/tasks", "/runs"})
+@RequestMapping("/tasks")
 public class TaskEventController {
     private final TaskSubscriptionService subscriptions;
 

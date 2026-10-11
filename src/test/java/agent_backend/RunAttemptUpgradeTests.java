@@ -33,7 +33,9 @@ class RunAttemptUpgradeTests {
         jdbc.update("INSERT INTO agent_step(step_id,task_id,step_number) VALUES (?,?,1)", step, running);
 
         var upgraded = Flyway.configure().dataSource(source).load();
-        assertEquals(1, upgraded.migrate().migrationsExecuted);
+        assertEquals(2, upgraded.migrate().migrationsExecuted);
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM run_event WHERE event_type='run.imported' AND seq=1", Integer.class));
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task WHERE last_event_seq=1", Integer.class));
         assertEquals(0, upgraded.migrate().migrationsExecuted);
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM run_attempt WHERE run_id=?", Integer.class, pending));
         assertEquals(3, jdbc.queryForObject("SELECT COUNT(*) FROM run_attempt WHERE legacy=TRUE", Integer.class));

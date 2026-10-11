@@ -27,16 +27,20 @@ public class JdbcTaskStore implements TaskStore {
     }
 
     @Override
+    @Transactional
     public void create(String taskId, String input) {
         Assert.hasText(input, "task must not be blank");
         jdbc.update("INSERT INTO agent_task (task_id, task_input) VALUES (?, ?)", taskId, input);
+        JdbcRunEvents.append(jdbc, taskId, "run.created", null, null, null, "PENDING");
     }
 
     @Override
+    @Transactional
     public void createOwned(String taskId, String input, String userId) {
         Assert.hasText(input, "task must not be blank");
         Assert.hasText(userId, "userId must not be blank");
         jdbc.update("INSERT INTO agent_task (task_id, task_input, user_id) VALUES (?, ?, ?)", taskId, input, userId);
+        JdbcRunEvents.append(jdbc, taskId, "run.created", null, null, null, "PENDING");
     }
 
     @Override
@@ -73,6 +77,7 @@ public class JdbcTaskStore implements TaskStore {
                     started_at = COALESCE(started_at, UTC_TIMESTAMP(6))
                 WHERE task_id = ? AND status = 'PENDING'
                 """, lease.attemptId(), token, lease.taskId()), "start run", lease.taskId());
+        JdbcRunEvents.append(jdbc, lease.taskId(), "run.started", lease.attemptId(), null, null, "RUNNING");
         return new TaskLease(lease.taskId(), lease.workerId(), lease.attemptId(), token);
     }
 
@@ -103,6 +108,7 @@ public class JdbcTaskStore implements TaskStore {
                   AND NOT EXISTS (SELECT 1 FROM agent_step WHERE task_id = ? AND status = 'RUNNING')
                 """, answer, lease.taskId(), lease.taskId()), "complete task", lease.taskId());
         finishAttempt(lease.taskId(), lease.attemptId(), "SUCCEEDED", null);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "run.completed", lease.attemptId(), null, null, "COMPLETED");
     }
 
     @Override
@@ -117,15 +123,18 @@ public class JdbcTaskStore implements TaskStore {
                 WHERE task_id = ? AND status = 'RUNNING'
                 """, reason, lease.taskId()), "fail task", lease.taskId());
         finishAttempt(lease.taskId(), lease.attemptId(), "FAILED", reason);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "run.failed", lease.attemptId(), null, null, "FAILED");
     }
 
     @Override
+    @Transactional
     public void failPending(String taskId, String reason) {
         Assert.hasText(reason, "failure reason must not be blank");
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_task SET status = 'FAILED', failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
                 WHERE task_id = ? AND status = 'PENDING'
                 """, reason, taskId), "fail pending task", taskId);
+        JdbcRunEvents.append(jdbc, taskId, "run.failed", null, null, null, "FAILED");
     }
 
     @Override
@@ -164,6 +173,7 @@ public class JdbcTaskStore implements TaskStore {
                     active_attempt_id = NULL
                 WHERE task_id = ? AND status = 'RUNNING'
                 """, reason, taskId);
+        JdbcRunEvents.append(jdbc, taskId, "run.failed", attemptId, null, null, "FAILED");
         return true;
     }
 
@@ -196,17 +206,18 @@ public class JdbcTaskStore implements TaskStore {
                 UPDATE run_attempt SET status = ?, ended_at = UTC_TIMESTAMP(6), reason = ?
                 WHERE run_id = ? AND attempt_id = ? AND status = 'RUNNING'
                 """, status, reason, runId, attemptId), "finish attempt", attemptId);
+        JdbcRunEvents.append(jdbc, runId, "attempt." + status.toLowerCase(java.util.Locale.ROOT),
+                attemptId, null, null, status);
     }
     private void closeUnfinishedChildren(String taskId, String reason) {
-        jdbc.update("""
-                UPDATE agent_tool_call c JOIN agent_step s ON s.step_id = c.step_id
-                SET c.status = CASE WHEN c.status = 'RUNNING' THEN 'UNKNOWN' ELSE 'FAILED' END,
-                    c.failure_reason = ?, c.finished_at = UTC_TIMESTAMP(6)
-                WHERE s.task_id = ? AND c.status IN ('PENDING', 'RUNNING')
-                """, reason, taskId);
-        jdbc.update("""
-                UPDATE agent_step SET status = 'FAILED', failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
-                WHERE task_id = ? AND status = 'RUNNING'
-                """, reason, taskId);
+        String attemptId = jdbc.queryForObject("SELECT active_attempt_id FROM agent_task WHERE task_id=?", String.class, taskId);
+        JdbcRunEvents.abortTools(jdbc, taskId, null, attemptId, reason);
+        var ids = jdbc.queryForList("SELECT step_id FROM agent_step WHERE task_id=? AND status='RUNNING' ORDER BY step_number",
+                String.class, taskId);
+        for (String id : ids) {
+            jdbc.update("UPDATE agent_step SET status='FAILED', failure_reason=?, finished_at=UTC_TIMESTAMP(6) WHERE step_id=?",
+                    reason, id);
+            JdbcRunEvents.append(jdbc, taskId, "step.failed", attemptId, id, null, "FAILED");
+        }
     }
 }

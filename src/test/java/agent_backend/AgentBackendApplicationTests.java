@@ -34,6 +34,8 @@ import tools.jackson.databind.json.JsonMapper;
 })
 class AgentBackendApplicationTests {
     @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private org.springframework.jdbc.core.JdbcTemplate eventJdbc;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
     private agent_backend.persistence.jdbc.JdbcLeaseGuard leaseGuard;
     @org.springframework.test.context.bean.override.mockito.MockitoBean
     private agent_backend.persistence.TaskStore taskStore;

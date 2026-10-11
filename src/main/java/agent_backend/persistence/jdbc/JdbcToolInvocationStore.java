@@ -45,6 +45,7 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
                         (invocation_id, step_id, tool_call_id, call_order, tool_name, arguments)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """, id, stepId, call.toolCallId(), i + 1, call.toolName(), mapper.writeValueAsString(call.arguments()));
+            JdbcRunEvents.append(jdbc, lease.taskId(), "tool.queued", lease.attemptId(), stepId, id, "PENDING");
             ids.add(id);
         }
         return List.copyOf(ids);
@@ -61,6 +62,7 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
                 SET c.status = 'RUNNING', c.started_at = UTC_TIMESTAMP(6)
                 WHERE c.invocation_id = ? AND c.status = 'PENDING' AND s.status = 'RUNNING' AND t.status = 'RUNNING' AND t.task_id = ?
                 """, invocationId, lease.taskId()), "start tool call", invocationId);
+        JdbcRunEvents.tool(jdbc, lease.taskId(), lease.attemptId(), invocationId, "RUNNING");
     }
 
     @Override
@@ -76,6 +78,7 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
                   AND step_id IN (SELECT step_id FROM agent_step WHERE task_id = ?)
                 """, status, mapper.writeValueAsString(result), reason, invocationId, result.toolCallId(), lease.taskId()),
                 "finish tool call", invocationId);
+        JdbcRunEvents.tool(jdbc, lease.taskId(), lease.attemptId(), invocationId, status);
     }
 
     @Override
@@ -83,13 +86,7 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
     public void abortUnfinished(TaskLease lease, String stepId, String reason) {
         Assert.hasText(reason, "failure reason must not be blank");
         leases.lock(lease);
-        jdbc.update("""
-                UPDATE agent_tool_call
-                SET status = CASE WHEN status = 'RUNNING' THEN 'UNKNOWN' ELSE 'FAILED' END,
-                    failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
-                WHERE step_id = ? AND status IN ('PENDING', 'RUNNING')
-                  AND step_id IN (SELECT step_id FROM agent_step WHERE task_id = ?)
-                """, reason, stepId, lease.taskId());
+        JdbcRunEvents.abortTools(jdbc, lease.taskId(), stepId, lease.attemptId(), reason);
     }
 
     @Override
