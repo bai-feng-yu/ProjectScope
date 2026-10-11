@@ -24,6 +24,7 @@ class TaskEventTests {
 
     @BeforeEach
     void setup() {
+        agent_backend.TestIdentity.login("alice");
         // 测试中直接执行发送任务并手动 poll，使事件时序可控；生产使用独立发送线程池。
         subscriptions = new TaskSubscriptionService(tasks, timer, Runnable::run, 1000, 15000, 300000);
         mvc = MockMvcBuilders.standaloneSetup(new TaskEventController(subscriptions))
@@ -31,7 +32,7 @@ class TaskEventTests {
     }
 
     @AfterEach
-    void cleanup() { subscriptions.stop(); }
+    void cleanup() { subscriptions.stop(); agent_backend.TestIdentity.clear(); }
 
     private TaskSnapshot snapshot(TaskStatus status) {
         return new TaskSnapshot(id, "test", status, status == TaskStatus.COMPLETED ? "done" : null,
@@ -40,7 +41,7 @@ class TaskEventTests {
 
     @Test
     void initialSnapshotChangesAndTerminalClose() throws Exception {
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var result = mvc.perform(get("/tasks/{id}/events", id))
                 .andExpect(status().isOk()).andExpect(request().asyncStarted())
                 .andExpect(content().contentTypeCompatibleWith("text/event-stream"))
@@ -49,7 +50,7 @@ class TaskEventTests {
         String initial = result.getResponse().getContentAsString();
         subscriptions.poll();
         assertEquals(initial, result.getResponse().getContentAsString());
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.COMPLETED));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.COMPLETED));
         subscriptions.poll();
         assertTrue(result.getResponse().getContentAsString().contains("\"finalAnswer\":\"done\""));
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
@@ -59,21 +60,47 @@ class TaskEventTests {
     }
 
     @Test
+    void pollingUsesCapturedIdentityWithoutRequestThreadContext() throws Exception {
+        var identity = agent_backend.security.TaskIdentity.current();
+        when(tasks.getSnapshot(id, identity)).thenReturn(snapshot(TaskStatus.RUNNING));
+        mvc.perform(get("/tasks/{id}/events", id)).andExpect(status().isOk());
+        agent_backend.TestIdentity.clear();
+        clearInvocations(tasks);
+        subscriptions.poll();
+        verify(tasks).getSnapshot(id, identity);
+    }
+
+    @Test
+    void expiryClosesExistingStreamBeforeReadingMoreData() throws Exception {
+        var identity = agent_backend.security.TaskIdentity.current();
+        when(tasks.getSnapshot(id, identity)).thenReturn(snapshot(TaskStatus.RUNNING));
+        var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
+        clearInvocations(tasks);
+        var expiredTime = identity.expiresAt().plusSeconds(1);
+        try (var clock = mockStatic(java.time.Instant.class, CALLS_REAL_METHODS)) {
+            clock.when(java.time.Instant::now).thenReturn(expiredTime);
+            subscriptions.poll();
+        }
+        mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+        verifyNoInteractions(tasks);
+    }
+
+    @Test
     void pollsOnceForMultipleSubscribersAndReconnectGetsCurrentSnapshot() throws Exception {
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.PENDING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.PENDING));
         mvc.perform(get("/tasks/{id}/events", id));
         mvc.perform(get("/tasks/{id}/events", id));
         clearInvocations(tasks);
         subscriptions.poll();
-        verify(tasks, times(1)).getSnapshot(id);
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        verify(tasks, times(1)).getSnapshot(id, agent_backend.security.TaskIdentity.current());
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var reconnected = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
         assertTrue(reconnected.getResponse().getContentAsString().contains("RUNNING"));
     }
 
     @Test
     void alreadyFailedTaskIsSentAndClosedImmediately() throws Exception {
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.FAILED));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.FAILED));
         var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
         assertTrue(result.getResponse().getContentAsString().contains("\"failureReason\":\"failed\""));
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
@@ -85,14 +112,14 @@ class TaskEventTests {
     @Test
     void invalidAndMissingTasksFailBeforeStreaming() throws Exception {
         mvc.perform(get("/tasks/not-a-uuid/events")).andExpect(status().isBadRequest());
-        when(tasks.getSnapshot(id)).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
         mvc.perform(get("/tasks/{id}/events", id)).andExpect(status().isNotFound())
                 .andExpect(request().asyncNotStarted());
     }
 
     @Test
     void storageFailureBeforeSubscriptionReturnsJson503() throws Exception {
-        when(tasks.getSnapshot(id)).thenThrow(
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenThrow(
                 new org.springframework.dao.DataAccessResourceFailureException("unavailable"));
         mvc.perform(get("/tasks/{id}/events", id).accept("text/event-stream"))
                 .andExpect(status().isServiceUnavailable()).andExpect(request().asyncNotStarted())
@@ -101,7 +128,7 @@ class TaskEventTests {
 
     @Test
     void disconnectAndTimeoutRemoveSubscriptions() throws Exception {
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
         var context = (org.springframework.mock.web.MockAsyncContext) result.getRequest().getAsyncContext();
         for (var listener : context.getListeners()) {
@@ -122,9 +149,9 @@ class TaskEventTests {
 
     @Test
     void failedSnapshotReadClosesAndRemovesSubscription() throws Exception {
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
-        when(tasks.getSnapshot(id)).thenThrow(new IllegalStateException("database unavailable"));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenThrow(new IllegalStateException("database unavailable"));
         subscriptions.poll();
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
         clearInvocations(tasks);
@@ -138,7 +165,7 @@ class TaskEventTests {
         subscriptions = new TaskSubscriptionService(tasks, timer,
                 command -> { throw new RejectedExecutionException(); }, 1000, 15000, 300000);
         mvc = MockMvcBuilders.standaloneSetup(new TaskEventController(subscriptions)).build();
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
         subscriptions.poll();
         mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
@@ -152,7 +179,7 @@ class TaskEventTests {
         subscriptions.stop();
         subscriptions = new TaskSubscriptionService(tasks, timer, Runnable::run, 1000, 1, 300000);
         mvc = MockMvcBuilders.standaloneSetup(new TaskEventController(subscriptions)).build();
-        when(tasks.getSnapshot(id)).thenReturn(snapshot(TaskStatus.RUNNING));
+        when(tasks.getSnapshot(id, agent_backend.security.TaskIdentity.current())).thenReturn(snapshot(TaskStatus.RUNNING));
         var result = mvc.perform(get("/tasks/{id}/events", id)).andReturn();
         Thread.sleep(5);
         subscriptions.poll();
@@ -168,10 +195,10 @@ class TaskEventTests {
         var calls = mock(agent_backend.persistence.ToolInvocationStore.class);
         var service = new TaskService(store, steps, calls, tools.jackson.databind.json.JsonMapper.builder().build());
         var now = java.time.LocalDateTime.of(2026, 10, 10, 0, 0);
-        when(store.find(id)).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
+        when(store.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
                 id, "test", TaskStatus.RUNNING, null, null, now, now, null, now, "owner", now, now.plusMinutes(1))));
-        var before = service.getSnapshot(id);
-        when(store.find(id)).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
+        var before = service.getSnapshot(id, agent_backend.security.TaskIdentity.current());
+        when(store.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
                 id, "test", TaskStatus.RUNNING, null, null, now, now, null, now.plusSeconds(10),
                 "owner", now.plusSeconds(10), now.plusMinutes(2))));
         assertEquals(before, service.getSnapshot(id));
@@ -181,7 +208,7 @@ class TaskEventTests {
                 "invocation", "step", "protocol-id", 1, "test", "{}",
                 agent_backend.persistence.model.ToolCallStatus.SUCCEEDED, "{\"data\":42}", null,
                 now, now, now, now)));
-        var after = service.getSnapshot(id);
+        var after = service.getSnapshot(id, agent_backend.security.TaskIdentity.current());
         assertNotEquals(before, after);
         assertEquals(42, after.steps().getFirst().calls().getFirst().result().get("data").asInt());
     }

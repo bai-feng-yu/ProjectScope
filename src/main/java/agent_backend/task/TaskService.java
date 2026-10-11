@@ -2,6 +2,7 @@ package agent_backend.task;
 
 import java.util.List;
 import java.util.UUID;
+import agent_backend.security.TaskIdentity;
 import agent_backend.persistence.TaskStore;
 import agent_backend.persistence.StepStore;
 import agent_backend.persistence.ToolInvocationStore;
@@ -34,7 +35,7 @@ public class TaskService {
     public CreateTaskResponse submit(CreateTaskRequest request) {
         Assert.hasText(request.task(), "task must not be blank");
         String taskId = UUID.randomUUID().toString();
-        tasks.create(taskId, request.task());
+        tasks.createOwned(taskId, request.task(), TaskIdentity.current().userId());
         return new CreateTaskResponse(taskId, TaskStatus.PENDING);
     }
 
@@ -54,7 +55,14 @@ public class TaskService {
     // 方法返回时事务已经结束，SSE 连接存续和网络发送不会一直占用该事务。
     @Transactional(readOnly = true)
     public TaskSnapshot getSnapshot(String taskId) {
-        var task = TaskDetailResponse.from(requireTask(taskId));
+        return getSnapshot(taskId, TaskIdentity.current());
+    }
+
+    @Transactional(readOnly = true)
+    public TaskSnapshot getSnapshot(String taskId, TaskIdentity identity) {
+        identity.requireValid();
+        var task = TaskDetailResponse.from(tasks.findOwned(taskId, identity.userId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found")));
         return new TaskSnapshot(task.taskId(), task.task(), task.status(), task.finalAnswer(),
                 task.failureReason(), task.createdAt(), task.startedAt(), task.finishedAt(), readSteps(taskId));
     }
@@ -67,6 +75,7 @@ public class TaskService {
     }
 
     private TaskRecord requireTask(String taskId) {
-        return tasks.find(taskId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found"));
+        return tasks.findOwned(taskId, TaskIdentity.current().userId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Task not found"));
     }
 }

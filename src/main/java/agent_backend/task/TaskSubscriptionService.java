@@ -1,6 +1,7 @@
 package agent_backend.task;
 
 import java.util.Set;
+import agent_backend.security.TaskIdentity;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import jakarta.annotation.PostConstruct;
@@ -24,8 +25,9 @@ public class TaskSubscriptionService {
     private final ScheduledExecutorService pollExecutor;
     private final Executor sendExecutor;
     private final long pollMs, heartbeatMs, timeoutMs;
-    // 一个任务可被多个页面订阅。按 taskId 分组，使每轮只读一次该任务再广播。
-    private final ConcurrentHashMap<String, Set<Subscription>> subscriptions = new ConcurrentHashMap<>();
+    // 同一任务、用户及身份有效期共享读取；不同用户不能共享广播组。
+    private record SubscriptionKey(String taskId, TaskIdentity identity) {}
+    private final ConcurrentHashMap<SubscriptionKey, Set<Subscription>> subscriptions = new ConcurrentHashMap<>();
     private ScheduledFuture<?> polling;
 
     public TaskSubscriptionService(TaskService tasks,
@@ -53,9 +55,11 @@ public class TaskSubscriptionService {
 
     public SseEmitter subscribe(String taskId) {
         // 先查数据库再建立流：此时还可以正常返回 404 或 JSON 503。
-        var snapshot = tasks.getSnapshot(taskId);
+        var identity = TaskIdentity.current();
+        var key = new SubscriptionKey(taskId, identity);
+        var snapshot = tasks.getSnapshot(taskId, identity);
         var emitter = new SseEmitter(timeoutMs);
-        var subscription = new Subscription(taskId, emitter);
+        var subscription = new Subscription(key, emitter);
         // 页面离开、网络断开、连接超时均需清理内存订阅；这些操作不会取消 Task。
         emitter.onCompletion(subscription::remove);
         emitter.onTimeout(subscription::close);
@@ -66,7 +70,7 @@ public class TaskSubscriptionService {
         if (!subscription.closed.get()) {
             // 已终态的任务会在首次发送后关闭，不再加入轮询表。
             // compute 将同一 taskId 下的增删串行化，避免最后一个订阅移除时丢失新订阅。
-            subscriptions.compute(taskId, (id, group) -> {
+            subscriptions.compute(key, (id, group) -> {
                 if (group == null) group = ConcurrentHashMap.newKeySet();
                 group.add(subscription);
                 return group;
@@ -76,13 +80,14 @@ public class TaskSubscriptionService {
     }
 
     void poll() {
-        subscriptions.forEach((taskId, group) -> {
+        subscriptions.forEach((key, group) -> {
             try {
-                var snapshot = tasks.getSnapshot(taskId);
+                key.identity().requireValid();
+                var snapshot = tasks.getSnapshot(key.taskId(), key.identity());
                 // 这里只提交发送工作，网络写入由独立线程池执行。
                 group.forEach(subscription -> subscription.offer(snapshot));
             } catch (Exception exception) {
-                log.warn("Could not read SSE snapshot for task {}", taskId, exception);
+                log.warn("Could not read SSE snapshot for task {}", key.taskId(), exception);
                 // 流建立后不能改为普通 HTTP 错误响应；关闭后由前端重连获取最新快照。
                 group.forEach(Subscription::close);
             }
@@ -97,7 +102,7 @@ public class TaskSubscriptionService {
     }
 
     private final class Subscription {
-        private final String taskId;
+        private final SubscriptionKey key;
         private final SseEmitter emitter;
         // 多个关闭来源可能同时触发，CAS 保证主动关闭只执行一次。
         private final AtomicBoolean closed = new AtomicBoolean();
@@ -106,8 +111,8 @@ public class TaskSubscriptionService {
         private TaskSnapshot lastSnapshot;
         private long lastSendNanos;
 
-        private Subscription(String taskId, SseEmitter emitter) {
-            this.taskId = taskId;
+        private Subscription(SubscriptionKey key, SseEmitter emitter) {
+            this.key = key;
             this.emitter = emitter;
         }
 
@@ -128,6 +133,7 @@ public class TaskSubscriptionService {
 
         void send(TaskSnapshot snapshot) {
             try {
+                key.identity().requireValid();
                 // 单调时钟只用于计算时间间隔，不受系统时间校准影响。
                 long now = System.nanoTime();
                 if (!snapshot.equals(lastSnapshot)) {
@@ -149,7 +155,7 @@ public class TaskSubscriptionService {
 
         void remove() {
             closed.set(true);
-            subscriptions.computeIfPresent(taskId, (id, group) -> {
+            subscriptions.computeIfPresent(key, (id, group) -> {
                 group.remove(this);
                 // 返回 null 会移除这个 taskId，无订阅的任务不再被 SSE 轮询。
                 return group.isEmpty() ? null : group;

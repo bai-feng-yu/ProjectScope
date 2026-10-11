@@ -4,8 +4,10 @@
 响应为 `text/event-stream`，携带 `Cache-Control: no-cache` 和 `X-Accel-Buffering: no`。
 UUID 非法返回 400，任务不存在返回 404，首次读取数据库失败返回 JSON 503。
 
+以下为事件处理示意。当前 API 要求 Bearer Token，请使用能设置 Authorization 头的 SSE 客户端；浏览器原生 EventSource 不能直接使用，参见 [认证说明](authentication.md)。
+
 ```javascript
-const events = new EventSource(`/tasks/${taskId}/events`);
+// events 是支持 Bearer Token 的 SSE 客户端，下面展示收到完整事件后的处理。
 events.addEventListener("snapshot", event => {
   const snapshot = JSON.parse(event.data);
   renderTask(snapshot); // 用完整快照替换页面状态
@@ -29,8 +31,8 @@ steps 使用现有步骤查询结构，包含 modelResponse、calls；calls 包�
 ## 实现和配置
 
 TaskService.getSnapshot 在一个短只读事务中读取任务、步骤、工具调用。
-TaskSubscriptionService 按 taskId 管理当前实例上的连接，独立定时器轮询被订阅任务，
-每轮每个 taskId 查询一次再广播。发送使用独立的 2 线程、64 队列执行器。
+TaskSubscriptionService 按 taskId、用户及身份有效期管理当前实例上的连接，独立定时器轮询被订阅任务，
+每轮每组查询一次再广播，查询时重新检查归属。发送使用独立的 2 线程、64 队列执行器。
 同一连接最多一个待处理或执行中的发送任务，慢连接不会无限堆积快照。
 发送队列满、发送失败或订阅期间数据库读取失败时关闭相应连接，由客户端重新连接。
 这些错误不修改任务状态；关闭订阅也不取消任务。
@@ -45,7 +47,8 @@ TaskSubscriptionService 按 taskId 管理当前实例上的连接，独立定时
 完成、超时、连接错误及应用关闭都会清理订阅。多个应用实例分别维护自己的连接，
 通过共享数据库观察任务变化，不要求执行任务的实例与订阅实例一致。
 代理需允许长连接并关闭响应缓冲；跨域部署沿用应用的 CORS 配置。
-当前仍没有用户身份与任务访问隔离，与现有查询接口一致。
+当前使用 JWT 身份与任务归属隔离；无身份返回 401，不属于该用户的任务返回 404。
+身份到期关闭已建立连接，客户端需刷新 Token 后重连；详情见 [认证说明](authentication.md)。
 
 本方案面向当前的小规模任务池。完整快照随历史增长，数据库查询与传输成本也会增长；
 后续需要完整事件回放或更大规模时，再引入持久化事件日志与增量推送。

@@ -53,6 +53,29 @@ class AgentRuntimeTests {
         return new AgentRunner(llm, new SequentialToolBatchExecutor(tools, invocations), registry, tasks, steps, invocations, leases, maxSteps);
     }
 
+    @Test
+    void workerUsesPersistedOwnerRatherThanCallingThreadIdentity() {
+        String id = java.util.UUID.randomUUID().toString();
+        when(tasks.find(id)).thenReturn(java.util.Optional.of(new agent_backend.persistence.model.TaskRecord(
+                id, "task", agent_backend.persistence.model.TaskStatus.PENDING,
+                null, null, null, null, null, null, null, null, null)));
+        when(tasks.findOwner(id)).thenReturn(java.util.Optional.of("persisted-alice"));
+        var executor = mock(agent_backend.tool.ToolBatchExecutor.class);
+        when(executor.execute(any(), any())).thenAnswer(call -> {
+            agent_backend.tool.ToolExecutionContext context = call.getArgument(0);
+            assertEquals("persisted-alice", context.userId());
+            assertEquals(id, context.leaseSession().lease().taskId());
+            return step().getToolResults();
+        });
+        when(llm.parseDecision(any())).thenReturn(step().getDecision(), LlmDecision.finalAnswer("done"));
+        TestIdentity.login("bob");
+        try {
+            var runner = new AgentRunner(llm, executor, registry, tasks, steps, invocations, leases, 2);
+            assertEquals(AgentState.AgentStateType.COMPLETED, runner.runExisting(id).getAgentStateType());
+            org.mockito.Mockito.verify(executor).execute(any(), any());
+        } finally { TestIdentity.clear(); }
+    }
+
     private AgentStep step() {
         return new AgentStep("step-1", 1, LlmDecision.toolCall("call-1", "test_tool", Map.of()),
                 List.of(new ToolSuccess<>("call-1", "test_tool", "ok")));

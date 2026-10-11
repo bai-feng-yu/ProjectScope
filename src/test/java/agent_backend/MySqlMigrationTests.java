@@ -68,7 +68,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("2", flyway.info().current().getVersion().getVersion());
+        assertEquals("3", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()
@@ -93,6 +93,19 @@ class MySqlMigrationTests {
         assertThrows(DataIntegrityViolationException.class, () -> createCall(id(), "provider-id", 1));
         // Protocol IDs are unique within a turn, not globally.
         createCall(createStep(taskId, 2), "provider-id", 1);
+    }
+
+    @Test
+    void ownedQueryIsScopedAndLegacyRowsRemainQuarantined() {
+        String owned = id();
+        String alice = "a".repeat(64), bob = "b".repeat(64);
+        tasks.createOwned(owned, "private input", alice);
+        assertTrue(tasks.findOwned(owned, alice).isPresent());
+        assertTrue(tasks.findOwned(owned, bob).isEmpty());
+        assertEquals(alice, tasks.findOwner(owned).orElseThrow());
+        String legacy = createTask();
+        assertTrue(tasks.findOwned(legacy, alice).isEmpty());
+        assertTrue(tasks.findOwner(legacy).isEmpty());
     }
 
     @Test

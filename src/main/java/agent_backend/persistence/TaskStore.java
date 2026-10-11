@@ -6,6 +6,9 @@ import agent_backend.persistence.model.TaskRecord;
 
 public interface TaskStore {
     void create(String taskId, String input);
+    void createOwned(String taskId, String input, String userId);
+    Optional<TaskRecord> findOwned(String taskId, String userId);
+    Optional<String> findOwner(String taskId);
     void start(TaskLease lease, long durationMs);
     boolean renew(TaskLease lease, long durationMs);
     void complete(TaskLease lease, String answer);

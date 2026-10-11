@@ -31,6 +31,10 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest
 @Testcontainers(disabledWithoutDocker = true)
 class TaskApiMySqlTests {
+    @org.junit.jupiter.api.BeforeEach
+    void identity() { TestIdentity.login("alice"); }
+    @org.junit.jupiter.api.AfterEach
+    void clearIdentity() { TestIdentity.clear(); }
     @Container
     static final MySQLContainer mysql = new MySQLContainer("mysql:8.4").withDatabaseName("task_api_test");
 

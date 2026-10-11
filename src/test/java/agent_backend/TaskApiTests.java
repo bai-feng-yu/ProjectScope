@@ -22,6 +22,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import tools.jackson.databind.json.JsonMapper;
 
 class TaskApiTests {
+    @org.junit.jupiter.api.AfterEach
+    void clearIdentity() { TestIdentity.clear(); }
     private final TaskStore tasks = mock(TaskStore.class);
     private final StepStore steps = mock(StepStore.class);
     private final ToolInvocationStore invocations = mock(ToolInvocationStore.class);
@@ -30,6 +32,7 @@ class TaskApiTests {
 
     @BeforeEach
     void setup() {
+        TestIdentity.login("alice");
         var service = new TaskService(tasks, steps, invocations, mapper);
         mvc = MockMvcBuilders.standaloneSetup(new TaskControler(service))
                 .setControllerAdvice(new TaskApiExceptionHandler()).build();
@@ -44,7 +47,7 @@ class TaskApiTests {
         String id = mapper.readTree(response.getContentAsString()).get("taskId").asText();
         assertEquals(id, UUID.fromString(id).toString());
         assertEquals("/tasks/" + id, response.getHeader("Location"));
-        verify(tasks).create(id, "hello");
+        verify(tasks).createOwned(id, "hello", agent_backend.security.TaskIdentity.current().userId());
         verifyNoInteractions(steps, invocations);
     }
 
@@ -61,14 +64,14 @@ class TaskApiTests {
     void detailsReadPersistedSuccessAndFailureWithoutScheduling() throws Exception {
         String id = UUID.randomUUID().toString();
         var time = LocalDateTime.of(2026, 10, 8, 1, 2, 3);
-        when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.COMPLETED,
+        when(tasks.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.COMPLETED,
                 "done", null, time, time, time, time, null, null, null)));
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.taskId").value(id))
                 .andExpect(jsonPath("$.status").value("COMPLETED"))
                 .andExpect(jsonPath("$.finalAnswer").value("done"))
                 .andExpect(jsonPath("$.createdAt").value("2026-10-08T01:02:03Z"));
-        when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.FAILED,
+        when(tasks.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.FAILED,
                 null, "model failed", time, time, time, time, null, null, null)));
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("FAILED"))
@@ -78,7 +81,7 @@ class TaskApiTests {
     @Test
     void stepsExposePartialPersistedResultsAsJsonObjects() throws Exception {
         String id = UUID.randomUUID().toString();
-        when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.RUNNING,
+        when(tasks.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.RUNNING,
                 null, null, null, null, null, null, null, null, null)));
         when(steps.findByTask(id)).thenReturn(List.of(new StepRecord("step", id, 1, StepStatus.RUNNING,
                 "{\"choices\":[]}", null, null, null, null)));
@@ -102,7 +105,7 @@ class TaskApiTests {
         mvc.perform(get("/tasks/{id}", id)).andExpect(status().isNotFound());
         mvc.perform(get("/tasks/{id}/steps", id)).andExpect(status().isNotFound());
         mvc.perform(get("/tasks/not-a-uuid")).andExpect(status().isBadRequest());
-        when(tasks.find(id)).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.PENDING,
+        when(tasks.findOwned(id, agent_backend.security.TaskIdentity.current().userId())).thenReturn(Optional.of(new TaskRecord(id, "task", TaskStatus.PENDING,
                 null, null, null, null, null, null, null, null, null)));
         mvc.perform(get("/tasks/{id}/steps", id)).andExpect(status().isOk())
                 .andExpect(content().json("[]"));
@@ -110,7 +113,7 @@ class TaskApiTests {
 
     @Test
     void databaseFailureDoesNotDispatchAndHidesSqlDetails() throws Exception {
-        doThrow(new DataAccessResourceFailureException("secret connection info")).when(tasks).create(any(), any());
+        doThrow(new DataAccessResourceFailureException("secret connection info")).when(tasks).createOwned(any(), any(), any());
         mvc.perform(post("/tasks").contentType(MediaType.APPLICATION_JSON).content("{\"task\":\"hello\"}"))
                 .andExpect(status().isServiceUnavailable())
                 .andExpect(jsonPath("$.code").value("TASK_STORAGE_UNAVAILABLE"))

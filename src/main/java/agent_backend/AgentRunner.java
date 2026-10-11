@@ -70,6 +70,8 @@ public class AgentRunner {
         try {
             session = leases.acquire(state.getTaskId());
             lease = session.lease();
+            // Owner comes from persisted task, never from HTTP thread-local state or model arguments.
+            String userId = tasks.findOwner(state.getTaskId()).orElse(null);
             state.setTools(toolRegistry.getAllTools());
             for (int number = 1; number <= maxSteps; number++) {
                 String stepId = UUID.randomUUID().toString();
@@ -83,7 +85,7 @@ public class AgentRunner {
                 steps.saveResponse(lease, stepId, response);
                 LlmDecision decision = llmClient.parseDecision(response);
                 if (decision.getDecisionType() == LlmDecision.DecsionType.TOOL_CALL) {
-                    var results = toolExecutor.execute(new ToolExecutionContext(session, stepId),
+                    var results = toolExecutor.execute(new ToolExecutionContext(session, stepId, userId),
                             decision.getToolCalls());
                     var completedStep = new AgentStep(stepId, number, decision, results);
                     steps.complete(lease, stepId);

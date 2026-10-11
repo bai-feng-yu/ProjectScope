@@ -28,6 +28,26 @@ public class JdbcTaskStore implements TaskStore {
     }
 
     @Override
+    public void createOwned(String taskId, String input, String userId) {
+        Assert.hasText(input, "task must not be blank");
+        Assert.hasText(userId, "userId must not be blank");
+        jdbc.update("INSERT INTO agent_task (task_id, task_input, user_id) VALUES (?, ?, ?)", taskId, input, userId);
+    }
+
+    @Override
+    public Optional<TaskRecord> findOwned(String taskId, String userId) {
+        Assert.hasText(userId, "userId must not be blank");
+        return jdbc.query("SELECT * FROM agent_task WHERE task_id = ? AND user_id = ?",
+                DataClassRowMapper.newInstance(TaskRecord.class), taskId, userId).stream().findFirst();
+    }
+
+    @Override
+    public Optional<String> findOwner(String taskId) {
+        return jdbc.queryForList("SELECT user_id FROM agent_task WHERE task_id = ? AND user_id IS NOT NULL",
+                String.class, taskId).stream().findFirst();
+    }
+
+    @Override
     public void start(TaskLease lease, long durationMs) {
         Assert.isTrue(durationMs > 0, "Lease duration must be positive");
         JdbcStoreSupport.requireOne(jdbc.update("""
