@@ -62,6 +62,7 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 
 - Existing step count limits remain. A Run receives a database-clock deadline when claimed (default 300 seconds).
 - Every lease-fenced write rejects an expired deadline; the recovery scan terminalizes the Run even if heartbeat is otherwise live.
+- Model/search I/O also uses the remaining database deadline as a whole-operation wait bound, including response-body reads. Timeout interrupts the I/O task; no retry is performed and physical remote cancellation is not promised.
 - Per-user running concurrency defaults to two. Claims serialize on the user row; excess work stays PENDING and the scheduler skips blocked users.
 - POST /runs/{id}/cancel is owned and idempotent. Cancellation shares the Run lock with final completion; the first terminal transition wins.
 - Pending tools fail and already-started uncertain tools remain UNKNOWN. In-flight HTTP calls may continue until their transport timeout, but cannot persist a late success.

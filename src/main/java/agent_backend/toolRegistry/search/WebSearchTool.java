@@ -13,8 +13,12 @@ public class WebSearchTool implements AgentTool<WebSearchTool.Input, WebSearchTo
     public record Hit(String title, String url, String snippet) {}
     public record Output(List<Hit> results, String errorCode) {}
     private final BraveSearchClient client;
+    private final agent_backend.task.RunDeadline deadline;
 
-    public WebSearchTool(BraveSearchClient client) { this.client = client; }
+    public WebSearchTool(BraveSearchClient client, agent_backend.task.RunDeadline deadline) {
+        this.client = client;
+        this.deadline = deadline;
+    }
     @Override public String name() { return "web_search"; }
     @Override public String description() {
         return "Search public web sources. Returns titles, URLs and snippets, not full pages. "
@@ -29,4 +33,8 @@ public class WebSearchTool implements AgentTool<WebSearchTool.Input, WebSearchTo
     }
     @Override public RecoveryPolicy recoveryPolicy() { return RecoveryPolicy.READ_ONLY; }
     @Override public Output execute(Input input) { return client.search(input.query()); }
+    @Override public Output execute(Input input, agent_backend.tool.ToolExecutionContext context) {
+        return context == null ? execute(input)
+                : deadline.call(context.leaseSession().lease().taskId(), () -> execute(input));
+    }
 }

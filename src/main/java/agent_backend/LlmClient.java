@@ -38,6 +38,8 @@ public class LlmClient {
     private final ToolDescriptorFactory descriptorFactory;
     private final String apiKey;
     private final String model;
+    @org.springframework.beans.factory.annotation.Autowired
+    private agent_backend.task.RunDeadline deadline;
 
     public LlmClient(ObjectMapper objectMapper, ToolDescriptorFactory descriptorFactory,
             @Value("${llm.api-key:}") String apiKey,
@@ -63,7 +65,8 @@ public class LlmClient {
             request.put("tool_choice", "auto");
         }
 
-        return post(request);
+        return agentState.getTaskId() == null || deadline == null ? post(request)
+                : deadline.call(agentState.getTaskId(), () -> post(request));
     }
 
     public String completeText(String system, List<Map<String, String>> messages) {
