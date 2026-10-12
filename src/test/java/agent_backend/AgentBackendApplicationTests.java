@@ -51,7 +51,7 @@ class AgentBackendApplicationTests {
 
 	@Test
 	void contextLoads() {
-		assertEquals(3, registry.getAllTools().size());
+		assertEquals(4, registry.getAllTools().size());
 	}
 
 	@Test

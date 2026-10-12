@@ -47,4 +47,15 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Research messages are accepted submissions, not synchronous pending replies; their runId identifies the live execution status.
 - MySQL fault-injection verifies message-write failure also rolls back Run creation.
 
+## M6 — Brave web search Tool (backend)
+
+- web_search is a READ_ONLY AgentTool and uses the same allowlist, Step/Tool persistence and Run events as existing tools.
+- Enable with BRAVE_SEARCH_ENABLED=true and BRAVE_SEARCH_API_KEY in the server environment. It is disabled by default.
+- The destination is fixed to Brave; redirects and automatic retries are disabled. Pool/connect/read limits are 2/3/8 seconds.
+- Returns at most five HTTP(S) source links with bounded title/snippet lengths; response bodies are capped at 256 KiB. No arbitrary webpage fetching.
+- Missing credentials, rate limits and unavailable search return explicit error codes without leaking provider error bodies or headers.
+- Local HTTP contract tests cover encoding, response parsing, unsafe-link rejection, missing keys, 429 and redirect rejection.
+- Real provider/model validation still requires operator credentials; local tests do not claim live Brave validation. The UI remains pending.
+- Provider contract: https://api-dashboard.search.brave.com/app/documentation/web-search
+
 Other MVP packages remain pending until their implementation and verification are recorded here.
