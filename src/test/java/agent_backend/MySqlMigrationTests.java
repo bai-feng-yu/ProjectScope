@@ -198,6 +198,16 @@ class MySqlMigrationTests {
         }
     }
 
+    @Test void disabledOwnerCannotStartAnotherModelStepOrReadSnapshots() {
+        String user = id().replace("-", "") + id().replace("-", ""), run = id();
+        tasks.createOwned(run, "input", user);
+        var lease = tasks.start(new TaskLease(run, id()), 60000);
+        jdbc.update("INSERT INTO app_user(user_id,enabled) VALUES (?,FALSE)", user);
+        assertTrue(tasks.findOwned(run, user).isEmpty());
+        assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> steps.create(lease, id(), 1));
+        tasks.fail(lease, "disabled"); // Revocation must not prevent durable cleanup.
+    }
+
     @Test void failedIdempotentCreationDoesNotReserveKey() {
         String user = "c".repeat(64), key = id();
         jdbc.execute("CREATE TRIGGER reject_created BEFORE INSERT ON run_event FOR EACH ROW BEGIN "
@@ -235,7 +245,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("7", flyway.info().current().getVersion().getVersion());
+        assertEquals("8", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()

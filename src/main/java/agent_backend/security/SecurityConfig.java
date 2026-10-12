@@ -14,7 +14,7 @@ import org.springframework.security.web.SecurityFilterChain;
 @Configuration
 public class SecurityConfig {
     @Bean
-    SecurityFilterChain taskSecurity(HttpSecurity http) throws Exception {
+    SecurityFilterChain taskSecurity(HttpSecurity http, ToolAccess access) throws Exception {
         return http
                 // Only Authorization: Bearer is supported; no cookie/session authentication.
                 .csrf(csrf -> csrf.disable())
@@ -23,6 +23,8 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()))
+                .addFilterAfter(new AccountAccessFilter(access),
+                        org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter.class)
                 .build();
     }
 

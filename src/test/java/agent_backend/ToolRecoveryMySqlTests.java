@@ -26,6 +26,9 @@ import tools.jackson.databind.ObjectMapper;
 @Import(ToolRecoveryMySqlTests.Adapters.class)
 @Testcontainers(disabledWithoutDocker=true)
 class ToolRecoveryMySqlTests {
+    // These tests exercise the underlying recovery contract with a fake write adapter, not MVP admission.
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    agent_backend.security.ToolAccess access;
     @Container static final MySQLContainer mysql = new MySQLContainer("mysql:8.4")
             .withCommand("--log-bin-trust-function-creators=1");
     @DynamicPropertySource static void database(DynamicPropertyRegistry registry) {

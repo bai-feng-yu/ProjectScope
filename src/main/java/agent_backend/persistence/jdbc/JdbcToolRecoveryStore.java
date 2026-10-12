@@ -100,6 +100,7 @@ public class JdbcToolRecoveryStore {
     private String owned(String runId, TaskIdentity identity, boolean lock) {
         identity.requireValid();
         var rows = jdbc.queryForList("SELECT status FROM agent_task WHERE task_id=? AND user_id=?"
+                + " AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.user_id=agent_task.user_id AND u.enabled=FALSE)"
                 + (lock ? " FOR UPDATE" : ""), String.class, runId, identity.userId());
         if (rows.isEmpty()) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Run not found");
         return rows.getFirst();

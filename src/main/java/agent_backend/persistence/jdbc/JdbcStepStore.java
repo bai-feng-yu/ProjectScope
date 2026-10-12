@@ -27,6 +27,12 @@ public class JdbcStepStore implements StepStore {
     @Transactional
     public void create(TaskLease lease, String stepId, int number) {
         leases.lock(lease);
+        // Re-check revocation at the model-call boundary, not only at HTTP submission.
+        if (!jdbc.queryForList("""
+                SELECT r.task_id FROM agent_task r JOIN app_user u ON u.user_id=r.user_id
+                WHERE r.task_id=? AND u.enabled=FALSE
+                """, String.class, lease.taskId()).isEmpty())
+            throw new org.springframework.security.access.AccessDeniedException("Account disabled");
         JdbcStoreSupport.requireOne(jdbc.update("""
                 INSERT INTO agent_step (step_id, task_id, step_number, created_attempt_id)
                 SELECT ?, task_id, ?, ? FROM agent_task WHERE task_id = ? AND status = 'RUNNING'

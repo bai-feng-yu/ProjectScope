@@ -14,11 +14,14 @@ public class ToolCall {
     private final ToolRegistry toolRegistry;
     private final JsonMapper objectMapper;
     private final ToolSchemaValidator schemaValidator;
+    private final agent_backend.security.ToolAccess access;
 
-    public ToolCall(ToolRegistry toolRegistry, JsonMapper objectMapper, ToolSchemaValidator schemaValidator) {
+    public ToolCall(ToolRegistry toolRegistry, JsonMapper objectMapper, ToolSchemaValidator schemaValidator,
+            agent_backend.security.ToolAccess access) {
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
         this.schemaValidator = schemaValidator;
+        this.access = access;
     }
 
     public ToolResult<?> callTool(String toolCallId, String toolName, Object arguments) {
@@ -32,6 +35,12 @@ public class ToolCall {
             tool = toolRegistry.getTool(toolName);
         } catch (IllegalArgumentException exception) {
             return new ToolFailure<>(toolCallId, toolName, "TOOL_NOT_FOUND", exception.getMessage());
+        }
+
+        try {
+            access.requireTool(context == null ? null : context.userId(), tool);
+        } catch (org.springframework.security.access.AccessDeniedException denied) {
+            return new ToolFailure<>(toolCallId, toolName, "TOOL_NOT_ALLOWED", denied.getMessage());
         }
 
         try {

@@ -103,7 +103,8 @@ class AgentBackendApplicationTests {
 				throw new IllegalArgumentException("business failure");
 			}
 		};
-		var dispatcher = new ToolCall(new ToolRegistry(List.of(failingTool), descriptorFactory), mapper, schemaValidator);
+		var dispatcher = new ToolCall(new ToolRegistry(List.of(failingTool), descriptorFactory), mapper, schemaValidator,
+                org.mockito.Mockito.mock(agent_backend.security.ToolAccess.class));
 		var failed = assertInstanceOf(agent_backend.tool.result.ToolUncertain.class,
 				dispatcher.callTool("call-4", "failing_tool",
 						Map.of("operation", "add", "left", 1, "right", 2)));
@@ -141,7 +142,8 @@ class AgentBackendApplicationTests {
 			@Override public TestOutput outputExample() { return new TestOutput(1); }
 			@Override public TestOutput execute(TestInput input) { return new TestOutput(executions.incrementAndGet()); }
 		};
-		var dispatcher = new ToolCall(new ToolRegistry(List.of(countingTool), descriptorFactory), mapper, schemaValidator);
+		var dispatcher = new ToolCall(new ToolRegistry(List.of(countingTool), descriptorFactory), mapper, schemaValidator,
+                org.mockito.Mockito.mock(agent_backend.security.ToolAccess.class));
 		List<Object> invalidArguments = Arrays.asList(
 				null,
 				List.of(),

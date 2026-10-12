@@ -46,7 +46,8 @@ public class JdbcTaskStore implements TaskStore {
     @Override
     public Optional<TaskRecord> findOwned(String taskId, String userId) {
         Assert.hasText(userId, "userId must not be blank");
-        return jdbc.query(RUN_SELECT + " WHERE r.task_id = ? AND r.user_id = ?",
+        return jdbc.query(RUN_SELECT + " WHERE r.task_id = ? AND r.user_id = ?"
+                        + " AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.user_id=r.user_id AND u.enabled=FALSE)",
                 DataClassRowMapper.newInstance(TaskRecord.class), taskId, userId).stream().findFirst();
     }
 
