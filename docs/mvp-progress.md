@@ -67,4 +67,13 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Pending tools fail and already-started uncertain tools remain UNKNOWN. In-flight HTTP calls may continue until their transport timeout, but cannot persist a late success.
 - Cancellation is not a rollback of external effects. High-risk external write tools remain prohibited.
 
+## M8 — Simple weekly research
+
+- POST /schedules creates an explicitly authorized weekly research task with conversationId, content and firstFireAt (ISO instant); Idempotency-Key is required.
+- GET /schedules and PUT /schedules/{id}/pause are user-scoped. Pausing stops future triggers, not an already-submitted Run.
+- Weekly wall time is Asia/Shanghai; stored timestamps are UTC. Missed weeks coalesce into one current trigger, then advance to the next weekly slot.
+- Scheduler row locking and atomic Run creation/slot advancement prevent duplicate triggers. Previous unfinished Runs or busy users cause the slot to be skipped.
+- Results use the same conversation/Run publication path. Resume may trigger one overdue slot; it does not replay every missed week.
+- No arbitrary cron, automatic retries, multihost capacity guarantee or proactive external writes are included.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

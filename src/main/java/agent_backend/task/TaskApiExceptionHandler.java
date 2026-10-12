@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = {TaskControler.class, TaskEventController.class,
         RunController.class, RunEventController.class, ToolRecoveryController.class,
         agent_backend.personal.ConversationController.class, agent_backend.personal.MemoryController.class,
-        agent_backend.personal.ResearchController.class})
+        agent_backend.personal.ResearchController.class, agent_backend.personal.WeeklyResearchController.class})
 public class TaskApiExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(TaskApiExceptionHandler.class);
     public record ApiError(String code, String message, String taskId) {}

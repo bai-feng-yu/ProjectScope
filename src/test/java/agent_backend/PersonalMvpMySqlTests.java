@@ -33,6 +33,7 @@ class PersonalMvpMySqlTests {
     @Autowired ResearchStore research;
     @Autowired agent_backend.persistence.TaskStore tasks;
     @Autowired agent_backend.persistence.StepStore steps;
+    @Autowired WeeklyResearchStore schedules;
     @MockitoBean LlmClient model;
     String user;
     @BeforeEach void login() { user = TestIdentity.login("personal-alice-" + UUID.randomUUID()).userId(); }
@@ -195,5 +196,34 @@ class PersonalMvpMySqlTests {
         assertTrue(tasks.findOwned(id, user).orElseThrow().failureReason().contains("deadline"));
         tasks.cancelOwned(id, user);
         assertEquals(agent_backend.persistence.model.TaskStatus.FAILED, tasks.findOwned(id, user).orElseThrow().status());
+    }
+
+    @Test void weeklyResearchCoalescesMissedSlotsAvoidsOverlapAndHonorsPause() {
+        String conversation = conversations.create(user, "Weekly");
+        var first = java.time.Instant.now().plusSeconds(3600);
+        String id = schedules.create(user, conversation, "Weekly career research", first, "schedule");
+        assertEquals(id, schedules.create(user, conversation, "Weekly career research", first, "schedule"));
+        assertEquals(404, assertThrows(ResponseStatusException.class, () -> schedules.pause("other", id, true)).getStatusCode().value());
+        jdbc.update("UPDATE scheduled_research SET next_fire_at=UTC_TIMESTAMP(6)-INTERVAL 15 DAY WHERE schedule_id=?", id);
+        assertTrue(schedules.due().contains(id));
+        schedules.pause(user, id, true);
+        schedules.fire(id);
+        assertNull(schedules.list(user).getFirst().lastRunId());
+        schedules.pause(user, id, false);
+        schedules.fire(id);
+        var fired = schedules.list(user).getFirst();
+        assertEquals("SUBMITTED", fired.lastOutcome());
+        assertNotNull(fired.lastRunId());
+        assertTrue(fired.nextFireAt().isAfter(java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)));
+        schedules.fire(id);
+        assertEquals(fired.lastRunId(), schedules.list(user).getFirst().lastRunId());
+        jdbc.update("UPDATE scheduled_research SET next_fire_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE schedule_id=?", id);
+        schedules.fire(id);
+        assertEquals("SKIPPED_OVERLAP", schedules.list(user).getFirst().lastOutcome());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task WHERE user_id=?", Integer.class, user));
+        tasks.cancelOwned(fired.lastRunId(), user);
+        jdbc.update("UPDATE scheduled_research SET next_fire_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE schedule_id=?", id);
+        schedules.fire(id);
+        assertNotEquals(fired.lastRunId(), schedules.list(user).getFirst().lastRunId());
     }
 }
