@@ -18,7 +18,8 @@ import org.springframework.web.server.ResponseStatusException;
 @SpringBootTest(properties = "agent.scheduler.enabled=false")
 @Testcontainers(disabledWithoutDocker=true)
 class PersonalMvpMySqlTests {
-    @Container static final MySQLContainer mysql = new MySQLContainer("mysql:8.4");
+    @Container static final MySQLContainer mysql = new MySQLContainer("mysql:8.4")
+            .withCommand("--log-bin-trust-function-creators=1");
     @DynamicPropertySource static void database(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", mysql::getJdbcUrl);
         registry.add("spring.datasource.username", mysql::getUsername);
@@ -29,6 +30,8 @@ class PersonalMvpMySqlTests {
     @Autowired JdbcTemplate jdbc;
     @Autowired MemoryStore memories;
     @Autowired MemoryService memory;
+    @Autowired ResearchStore research;
+    @Autowired agent_backend.persistence.TaskStore tasks;
     @MockitoBean LlmClient model;
     String user;
     @BeforeEach void login() { user = TestIdentity.login("personal-alice-" + UUID.randomUUID()).userId(); }
@@ -127,5 +130,39 @@ class PersonalMvpMySqlTests {
         assertTrue(memory.context(user, "career").contains("Java"));
         assertFalse(memory.context(user, "career").contains("Python"));
         assertFalse(memories.reserveSource(user, source));
+    }
+
+    @Test void researchSubmissionAndResultPublicationAreDurableAndIdempotent() {
+        String conversation = conversations.create(user, "Research");
+        var first = research.submit(user, conversation, "research", "Compare Java roles");
+        assertEquals(first, research.submit(user, conversation, "research", "Compare Java roles"));
+        assertEquals(first.runId(), conversations.messages(user, conversation).getFirst().runId());
+        assertTrue(tasks.findOwned(first.runId(), user).isPresent());
+        assertEquals(409, assertThrows(ResponseStatusException.class,
+                () -> chat.send(conversation, "research", "Compare Java roles")).getStatusCode().value());
+        assertEquals(404, assertThrows(ResponseStatusException.class,
+                () -> research.submit("other", conversation, "key", "query")).getStatusCode().value());
+        tasks.failPending(first.runId(), "Search unavailable");
+        assertTrue(research.unpublished(50).contains(first.messageId()));
+        research.publish(first.messageId());
+        research.publish(first.messageId());
+        assertEquals(2, conversations.messages(user, conversation).size());
+        assertEquals("Research failed: Search unavailable", conversations.messages(user, conversation).getLast().content());
+        assertFalse(research.unpublished(50).contains(first.messageId()));
+    }
+
+    @Test void researchRunRollsBackWhenMessageCannotBeSaved() {
+        String conversation = conversations.create(user, "Rollback");
+        int before = jdbc.queryForObject("SELECT COUNT(*) FROM agent_task", Integer.class);
+        jdbc.execute("""
+                CREATE TRIGGER reject_research BEFORE INSERT ON conversation_message FOR EACH ROW
+                SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected message failure'
+                """);
+        try {
+            assertThrows(org.springframework.dao.DataAccessException.class,
+                    () -> research.submit(user, conversation, "fail", "query"));
+            assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task", Integer.class));
+        } finally { jdbc.execute("DROP TRIGGER reject_research"); }
+        assertNotNull(research.submit(user, conversation, "fail", "query").runId());
     }
 }

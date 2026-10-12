@@ -38,4 +38,13 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Retrieval uses topic matching plus recent confirmed memories (up to eight), not embeddings. User corrections take precedence over memory.
 - Extraction failure never rolls back a saved reply. No background extraction retries are promised.
 
+## M5 — Durable conversation / Run bridge
+
+- POST /conversations/{id}/research requires Idempotency-Key and atomically creates a Run plus its linked user message.
+- Research submissions snapshot the relevant confirmed memory; only the owning user can submit/read the conversation.
+- The database scheduler picks up committed Runs. A separate retryable publisher appends terminal results with unique reply_to deduplication.
+- A publication outage delays the chat reply but cannot lose the Run or duplicate its reply. Existing Run snapshots/events remain queryable.
+- Research messages are accepted submissions, not synchronous pending replies; their runId identifies the live execution status.
+- MySQL fault-injection verifies message-write failure also rolls back Run creation.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

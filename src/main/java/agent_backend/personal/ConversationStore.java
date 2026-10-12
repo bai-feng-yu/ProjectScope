@@ -15,7 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class ConversationStore {
     public record Conversation(String conversationId, String title, LocalDateTime createdAt, LocalDateTime updatedAt) {}
     public record Message(String messageId, String role, String content, String status, String replyTo,
-            String errorMessage, LocalDateTime createdAt) {}
+            String errorMessage, LocalDateTime createdAt, String runId) {}
     public record Turn(Message message, boolean created) {}
     private final JdbcTemplate jdbc;
     private final ToolAccess access;
@@ -59,7 +59,8 @@ public class ConversationStore {
                 DataClassRowMapper.newInstance(Message.class), conversationId, hash);
         if (!existing.isEmpty()) {
             var message = existing.getFirst();
-            if (!message.content().equals(content)) throw new ResponseStatusException(HttpStatus.CONFLICT, "Message key conflict");
+            if (message.runId() != null || !message.content().equals(content))
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Message key conflict");
             return new Turn(message, false);
         }
         // A crashed synchronous reply is not retried automatically. The user can submit a new turn.
