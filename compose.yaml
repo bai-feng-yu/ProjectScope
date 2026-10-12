@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: agent_backend
+      MYSQL_USER: agent_backend
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the server environment}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set a distinct MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -u agent_backend -D agent_backend -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  app:
+    build: .
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/agent_backend?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
+      DB_USERNAME: agent_backend
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
+      AUTH_ISSUER: ${AUTH_ISSUER:?Set AUTH_ISSUER}
+      AUTH_JWK_SET_URI: ${AUTH_JWK_SET_URI:?Set AUTH_JWK_SET_URI}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:?Set AUTH_AUDIENCE}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:?Set LLM_MODEL}
+      BRAVE_SEARCH_ENABLED: ${BRAVE_SEARCH_ENABLED:-false}
+      BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
+      AGENT_RUN_TIMEOUT_SECONDS: ${AGENT_RUN_TIMEOUT_SECONDS:-300}
+      AGENT_MAX_RUNNING_PER_USER: ${AGENT_MAX_RUNNING_PER_USER:-2}
+    restart: unless-stopped
+volumes:
+  mysql_data:

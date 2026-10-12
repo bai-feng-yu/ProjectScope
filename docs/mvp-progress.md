@@ -88,4 +88,21 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - User/model content renders as text, not HTML. Message and schedule retries reuse their request key while the request payload is unchanged.
 - Static serving, JavaScript syntax and security-filter checks are automated. Visual/browser interaction verification depends on an available browser connection.
 
-Other MVP packages remain pending until their implementation and verification are recorded here.
+## M9 — Local acceptance and deployment handoff (2026-10-12)
+
+- `mvnw.cmd package -q`: successful. 148 tests, 0 failures, 0 errors, 0 skipped across 22 test suites.
+- Real MySQL 8.4 Testcontainers cover migration through V14, transactions, user isolation, concurrent message/research retries, cancellation/completion races and weekly trigger races.
+- PersonalAgentEndToEndTests runs the actual model HTTP protocol, Brave adapter, scheduler, events and result publication against deterministic local HTTP fixtures.
+- PersonalAgentRestartTests closes and restarts the application against one isolated database; committed pending work completes and an expired orphaned Attempt fails safely.
+- `node --check src/main/resources/static/app.js`, static HTTP serving and public-shell/private-API security checks pass.
+- Built `target/agent-backend-0.0.1-SNAPSHOT.jar`; archive inspection confirms static assets and V14 are present, and application-local.properties is absent.
+- Compose configuration validation passes with disposable placeholder values. Dockerfile, compose.yaml and the credential/backup/restart guide are included in [mvp-deployment.md](mvp-deployment.md).
+
+### Verification limits — not silently marked complete
+
+- The user explicitly deferred live model / Brave / identity-provider validation. No real search quality, personalization quality or production credential validation is claimed.
+- No browser was available through the Browser skill, so interactive/visual browser acceptance remains outstanding. Sites guidance was applied to the local buildless interface; no external Site was created or published.
+- Docker image build was attempted but blocked while retrieving eclipse-temurin from Docker Hub (authentication endpoint network timeout). Compose validation and jar packaging do not constitute a successful image build.
+- No production database, live deployment or real backup/restore was modified or exercised. The restart test uses real application contexts and an isolated database, not a forced-kill multihost test.
+
+The local implementation and automated acceptance are delivered. Full live-product sign-off still requires the deferred checks above; advanced platform features remain intentionally outside MVP scope.

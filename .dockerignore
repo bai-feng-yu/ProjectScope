@@ -1,0 +1,9 @@
+.git
+target
+.env
+.env.*
+**/application-local.properties
+.idea
+.vscode
+docs
+scripts
