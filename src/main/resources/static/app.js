@@ -38,7 +38,7 @@ async function api(path, method = 'GET', body, key) {
 function disconnect() {
   session++; token = ''; conversationId = null; runId = null; pendingSend = null; pendingSchedule = null;
   stream?.abort(); stream = null; $('token').value = '';
-  for (const id of ['conversations','messages','memories','schedules','run-events']) $(id).replaceChildren();
+  for (const id of ['conversations','messages','memories','schedules','run-events','run-answer']) $(id).replaceChildren();
   $('conversation-title').textContent = '选择或新建对话'; $('run-status').textContent = '尚未选择 Run';
   $('cancel-run').disabled = true; $('memory-enabled').checked = false;
   $('message').value = ''; $('schedule-content').value = ''; note('已断开；本页身份及数据已清除。');
@@ -112,12 +112,13 @@ async function refreshSchedules() {
 async function refreshAll() { await Promise.all([refreshConversations(), refreshMessages(), refreshMemories(), refreshSchedules()]); }
 async function watchRun(id) {
   stream?.abort(); const controller = new AbortController(); stream = controller; runId = id;
-  $('run-events').textContent = ''; let cursor = null;
+  $('run-events').textContent = ''; $('run-answer').textContent = ''; let cursor = null;
   const current = session;
   async function snapshot() {
     const run = await api(`/runs/${id}`);
     if (controller.signal.aborted || current !== session) return true;
     $('run-status').textContent = `${id} · ${run.status}${run.failureReason ? ' · ' + run.failureReason : ''}`;
+    $('run-answer').textContent = run.finalAnswer || '';
     $('cancel-run').disabled = terminal(run.status());
     return terminal(run.status());
   }
