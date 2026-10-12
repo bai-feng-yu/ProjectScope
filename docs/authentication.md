@@ -1,5 +1,7 @@
 # 第一批：JWT 身份与任务隔离
 
+本文保留第一批鉴权实现说明。当前本地操作步骤见 [local-browser-testing.md](local-browser-testing.md)。MVP 已新增 `app_user.enabled` 账户禁用检查；`/runs/{id}/events` 已支持持久事件及 Last-Event-ID 回放。下文“本批尚无账户禁用表”“仍是快照协议”描述的是早期版本；`/tasks/{id}/events` 仍为兼容快照接口。首页静态资源现可匿名读取，私人数据 API 继续要求 JWT。
+
 后端作为 OAuth2 Resource Server 接受外部身份提供方签发的 RS256 JWT。没有实现注册、密码登录或 Token 签发；身份提供方由部署方选择。
 
 ## 配置
