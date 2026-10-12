@@ -58,4 +58,13 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Real provider/model validation still requires operator credentials; local tests do not claim live Brave validation. The UI remains pending.
 - Provider contract: https://api-dashboard.search.brave.com/app/documentation/web-search
 
+## M7 — Resource limits and basic cancellation
+
+- Existing step count limits remain. A Run receives a database-clock deadline when claimed (default 300 seconds).
+- Every lease-fenced write rejects an expired deadline; the recovery scan terminalizes the Run even if heartbeat is otherwise live.
+- Per-user running concurrency defaults to two. Claims serialize on the user row; excess work stays PENDING and the scheduler skips blocked users.
+- POST /runs/{id}/cancel is owned and idempotent. Cancellation shares the Run lock with final completion; the first terminal transition wins.
+- Pending tools fail and already-started uncertain tools remain UNKNOWN. In-flight HTTP calls may continue until their transport timeout, but cannot persist a late success.
+- Cancellation is not a rollback of external effects. High-risk external write tools remain prohibited.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

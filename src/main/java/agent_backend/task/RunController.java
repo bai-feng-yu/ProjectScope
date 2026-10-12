@@ -27,6 +27,9 @@ public class RunController {
     @GetMapping("/{runId}")
     public RunDetailResponse get(@PathVariable UUID runId) { return service.getRun(runId.toString()); }
 
+    @PostMapping("/{runId}/cancel")
+    public RunDetailResponse cancel(@PathVariable UUID runId) { return service.cancel(runId.toString()); }
+
     @GetMapping("/{runId}/attempts")
     public List<RunAttemptResponse> attempts(@PathVariable UUID runId) { return service.getAttempts(runId.toString()); }
 

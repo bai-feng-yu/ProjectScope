@@ -54,7 +54,7 @@ public class ResearchStore {
     public List<String> unpublished(int limit) {
         return jdbc.queryForList("""
                 SELECT m.message_id FROM conversation_message m JOIN agent_task r ON r.task_id=m.run_id
-                WHERE r.status IN ('COMPLETED','FAILED')
+                WHERE r.status IN ('COMPLETED','FAILED','CANCELLED')
                   AND NOT EXISTS (SELECT 1 FROM conversation_message a WHERE a.reply_to=m.message_id)
                   AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.user_id=m.user_id AND u.enabled=FALSE)
                 ORDER BY m.created_at,m.message_id LIMIT ?
@@ -72,8 +72,8 @@ public class ResearchStore {
         if (!jdbc.queryForList("SELECT message_id FROM conversation_message WHERE reply_to=?", messageId).isEmpty()) return;
         var run = tasks.findOwned((String) message.get("run_id"), user).orElseThrow();
         boolean completed = agent_backend.persistence.model.TaskStatus.COMPLETED == run.status();
-        if (!completed && agent_backend.persistence.model.TaskStatus.FAILED != run.status()) return;
-        String answer = completed ? run.finalAnswer() : "Research failed: " + run.failureReason();
+        if (!run.status().isTerminal()) return;
+        String answer = completed ? run.finalAnswer() : "Research " + run.status().name().toLowerCase(java.util.Locale.ROOT) + ": " + run.failureReason();
         // Terminal Run data is immutable. reply_to uniqueness + the conversation lock make publication retryable.
         jdbc.update("""
                 INSERT INTO conversation_message(message_id,user_id,conversation_id,role,content,status,reply_to)

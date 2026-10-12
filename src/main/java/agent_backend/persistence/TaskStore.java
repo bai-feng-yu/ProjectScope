@@ -22,4 +22,5 @@ public interface TaskStore {
     List<String> findPending(int limit);
     List<String> findExpired(int limit);
     boolean recoverExpired(String taskId);
+    void cancelOwned(String taskId, String userId);
 }

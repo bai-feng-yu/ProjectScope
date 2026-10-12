@@ -19,6 +19,7 @@ public class JdbcLeaseGuard {
         var rows = jdbc.queryForList("""
                 SELECT task_id FROM agent_task
                 WHERE task_id = ? AND active_attempt_id = ? AND fence_token = ? AND status = 'RUNNING'
+                  AND (deadline_at IS NULL OR deadline_at > UTC_TIMESTAMP(6))
                 FOR UPDATE
                 """, String.class, lease.taskId(), lease.attemptId(), lease.fenceToken());
         if (rows.isEmpty()) throw new LeaseLostException(lease.taskId());

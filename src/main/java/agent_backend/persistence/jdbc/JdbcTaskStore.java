@@ -19,6 +19,15 @@ public class JdbcTaskStore implements TaskStore {
             FROM agent_task r LEFT JOIN run_attempt a ON a.run_id = r.task_id AND a.fence_token = r.fence_token
             """;
     private final JdbcTemplate jdbc;
+    @org.springframework.beans.factory.annotation.Value("${agent.limits.max-running-per-user:2}")
+    private int maxRunningPerUser = 2;
+    @org.springframework.beans.factory.annotation.Value("${agent.limits.run-timeout-seconds:300}")
+    private int runTimeoutSeconds = 300;
+
+    @jakarta.annotation.PostConstruct
+    void validateLimits() {
+        Assert.isTrue(maxRunningPerUser > 0 && runTimeoutSeconds > 0, "Run limits must be positive");
+    }
 
     private final JdbcLeaseGuard leases;
     public JdbcTaskStore(JdbcTemplate jdbc, JdbcLeaseGuard leases) {
@@ -54,7 +63,6 @@ public class JdbcTaskStore implements TaskStore {
     @Override
     @Transactional
     public String createOwnedOnce(String input, String userId, String key) {
-        var keys = agent_backend.task.RequestKeys.class;
         String keyHash = agent_backend.task.RequestKeys.hash(agent_backend.task.RequestKeys.validate(key));
         String inputHash = agent_backend.task.RequestKeys.hash(input);
         String id = java.util.UUID.randomUUID().toString();
@@ -85,6 +93,15 @@ public class JdbcTaskStore implements TaskStore {
     @Transactional
     public TaskLease start(TaskLease lease, long durationMs) {
         Assert.isTrue(durationMs > 0, "Lease duration must be positive");
+        findOwner(lease.taskId()).ifPresent(user -> {
+            // Serialize concurrent claims for this user before locking individual Runs.
+            jdbc.update("INSERT IGNORE INTO app_user(user_id) VALUES (?)", user);
+            Boolean enabled = jdbc.queryForObject("SELECT enabled FROM app_user WHERE user_id=? FOR UPDATE", Boolean.class, user);
+            if (!Boolean.TRUE.equals(enabled)) throw new IllegalStateException("User is disabled");
+            var active = jdbc.queryForList("SELECT task_id FROM agent_task WHERE user_id=? AND status='RUNNING' FOR UPDATE",
+                    String.class, user);
+            if (active.size() >= maxRunningPerUser) throw new IllegalStateException("User concurrency limit reached");
+        });
         var tokens = jdbc.queryForList("""
                 SELECT fence_token FROM agent_task WHERE task_id = ? AND status = 'PENDING'
                     AND active_attempt_id IS NULL FOR UPDATE
@@ -99,9 +116,10 @@ public class JdbcTaskStore implements TaskStore {
                 """, lease.taskId(), lease.attemptId(), token, token, lease.workerId(), Math.multiplyExact(durationMs, 1000));
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_task SET status = 'RUNNING', active_attempt_id = ?, fence_token = ?,
-                    started_at = COALESCE(started_at, UTC_TIMESTAMP(6))
+                    started_at = COALESCE(started_at, UTC_TIMESTAMP(6)),
+                    deadline_at = TIMESTAMPADD(SECOND, ?, UTC_TIMESTAMP(6))
                 WHERE task_id = ? AND status = 'PENDING'
-                """, lease.attemptId(), token, lease.taskId()), "start run", lease.taskId());
+                """, lease.attemptId(), token, runTimeoutSeconds, lease.taskId()), "start run", lease.taskId());
         JdbcRunEvents.append(jdbc, lease.taskId(), "run.started", lease.attemptId(), null, null, "RUNNING");
         return new TaskLease(lease.taskId(), lease.workerId(), lease.attemptId(), token);
     }
@@ -183,7 +201,7 @@ public class JdbcTaskStore implements TaskStore {
                 SELECT r.task_id FROM agent_task r LEFT JOIN run_attempt a
                     ON a.run_id = r.task_id AND a.attempt_id = r.active_attempt_id
                 WHERE r.status = 'RUNNING'
-                    AND (a.lease_until IS NULL OR a.lease_until <= UTC_TIMESTAMP(6))
+                    AND (a.lease_until IS NULL OR a.lease_until <= UTC_TIMESTAMP(6) OR r.deadline_at <= UTC_TIMESTAMP(6))
                 ORDER BY a.lease_until, r.task_id LIMIT ?
                 """, String.class, limit);
     }
@@ -197,14 +215,16 @@ public class JdbcTaskStore implements TaskStore {
                 """, String.class, taskId);
         if (running.isEmpty()) return false;
         String attemptId = jdbc.queryForObject("SELECT active_attempt_id FROM agent_task WHERE task_id = ?", String.class, taskId);
-        if (attemptId != null) {
+        boolean deadline = Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT deadline_at IS NOT NULL AND deadline_at<=UTC_TIMESTAMP(6) FROM agent_task WHERE task_id=?", Boolean.class, taskId));
+        if (attemptId != null && !deadline) {
             var expired = jdbc.queryForList("""
                     SELECT attempt_id FROM run_attempt WHERE run_id = ? AND attempt_id = ? AND status = 'RUNNING'
                         AND (lease_until IS NULL OR lease_until <= UTC_TIMESTAMP(6)) FOR UPDATE
                     """, String.class, taskId, attemptId);
             if (expired.isEmpty()) return false;
         }
-        String reason = "Task execution interrupted: worker lease expired";
+        String reason = deadline ? "Run total execution deadline exceeded" : "Task execution interrupted: worker lease expired";
         closeUnfinishedChildren(taskId, reason);
         if (attemptId != null) finishAttempt(taskId, attemptId, "EXPIRED", reason);
         jdbc.update("""
@@ -226,9 +246,36 @@ public class JdbcTaskStore implements TaskStore {
     public List<String> findPending(int limit) {
         Assert.isTrue(limit > 0, "limit must be positive");
         return jdbc.queryForList("""
-                SELECT task_id FROM agent_task WHERE status = 'PENDING'
-                ORDER BY created_at, task_id LIMIT ?
-                """, String.class, limit);
+                SELECT r.task_id FROM agent_task r WHERE r.status = 'PENDING'
+                  AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.user_id=r.user_id AND u.enabled=FALSE)
+                  AND (r.user_id IS NULL OR (SELECT COUNT(*) FROM agent_task active
+                      WHERE active.user_id=r.user_id AND active.status='RUNNING') < ?)
+                ORDER BY r.created_at, r.task_id LIMIT ?
+                """, String.class, maxRunningPerUser, limit);
+    }
+
+    @Override
+    @Transactional
+    public void cancelOwned(String taskId, String userId) {
+        var rows = jdbc.queryForList("""
+                SELECT status,active_attempt_id FROM agent_task WHERE task_id=? AND user_id=?
+                  AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.user_id=agent_task.user_id AND u.enabled=FALSE) FOR UPDATE
+                """, taskId, userId);
+        if (rows.isEmpty()) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.NOT_FOUND, "Run not found");
+        var row = rows.getFirst();
+        String status = (String) row.get("status");
+        if (!"PENDING".equals(status) && !"RUNNING".equals(status)) return;
+        String attempt = (String) row.get("active_attempt_id");
+        String reason = "Cancelled by user";
+        // Same parent lock as final completion: whichever terminal transition commits first wins.
+        closeUnfinishedChildren(taskId, reason);
+        if (attempt != null) finishAttempt(taskId, attempt, "CANCELLED", reason);
+        jdbc.update("""
+                UPDATE agent_task SET status='CANCELLED',failure_reason=?,finished_at=UTC_TIMESTAMP(6),active_attempt_id=NULL
+                WHERE task_id=?
+                """, reason, taskId);
+        JdbcRunEvents.append(jdbc, taskId, "run.cancelled", attempt, null, null, "CANCELLED");
     }
 
     @Override

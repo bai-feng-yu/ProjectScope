@@ -32,6 +32,7 @@ class PersonalMvpMySqlTests {
     @Autowired MemoryService memory;
     @Autowired ResearchStore research;
     @Autowired agent_backend.persistence.TaskStore tasks;
+    @Autowired agent_backend.persistence.StepStore steps;
     @MockitoBean LlmClient model;
     String user;
     @BeforeEach void login() { user = TestIdentity.login("personal-alice-" + UUID.randomUUID()).userId(); }
@@ -164,5 +165,35 @@ class PersonalMvpMySqlTests {
             assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task", Integer.class));
         } finally { jdbc.execute("DROP TRIGGER reject_research"); }
         assertNotNull(research.submit(user, conversation, "fail", "query").runId());
+    }
+
+    @Test void runningLimitQueuesExcessWorkAndCancelFencesLateWriters() {
+        String first = UUID.randomUUID().toString(), second = UUID.randomUUID().toString(), third = UUID.randomUUID().toString();
+        for (String id : java.util.List.of(first, second, third)) tasks.createOwned(id, "work", user);
+        var lease = tasks.start(new agent_backend.persistence.TaskLease(first, "worker"), 60000);
+        tasks.start(new agent_backend.persistence.TaskLease(second, "worker"), 60000);
+        assertThrows(IllegalStateException.class, () -> tasks.start(new agent_backend.persistence.TaskLease(third, "worker"), 60000));
+        assertFalse(tasks.findPending(100).contains(third));
+        tasks.cancelOwned(first, user);
+        tasks.cancelOwned(first, user);
+        assertEquals(agent_backend.persistence.model.TaskStatus.CANCELLED, tasks.findOwned(first, user).orElseThrow().status());
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.complete(lease, "late"));
+        assertTrue(tasks.findPending(100).contains(third));
+        assertNotNull(tasks.start(new agent_backend.persistence.TaskLease(third, "worker"), 60000));
+        assertEquals(404, assertThrows(ResponseStatusException.class, () -> tasks.cancelOwned(second, "other")).getStatusCode().value());
+    }
+
+    @Test void deadlineFencesWritesEvenWithLiveHeartbeatAndRecoveryPublishesFailure() {
+        String id = UUID.randomUUID().toString();
+        tasks.createOwned(id, "work", user);
+        var lease = tasks.start(new agent_backend.persistence.TaskLease(id, "worker"), 60000);
+        jdbc.update("UPDATE agent_task SET deadline_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE task_id=?", id);
+        assertFalse(tasks.renew(lease, 60000));
+        assertThrows(agent_backend.persistence.LeaseLostException.class, () -> tasks.complete(lease, "late"));
+        assertTrue(tasks.findExpired(100).contains(id));
+        assertTrue(tasks.recoverExpired(id));
+        assertTrue(tasks.findOwned(id, user).orElseThrow().failureReason().contains("deadline"));
+        tasks.cancelOwned(id, user);
+        assertEquals(agent_backend.persistence.model.TaskStatus.FAILED, tasks.findOwned(id, user).orElseThrow().status());
     }
 }

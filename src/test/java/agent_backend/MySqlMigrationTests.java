@@ -202,7 +202,7 @@ class MySqlMigrationTests {
         String user = id().replace("-", "") + id().replace("-", ""), run = id();
         tasks.createOwned(run, "input", user);
         var lease = tasks.start(new TaskLease(run, id()), 60000);
-        jdbc.update("INSERT INTO app_user(user_id,enabled) VALUES (?,FALSE)", user);
+        jdbc.update("UPDATE app_user SET enabled=FALSE WHERE user_id=?", user);
         assertTrue(tasks.findOwned(run, user).isEmpty());
         assertThrows(org.springframework.security.access.AccessDeniedException.class, () -> steps.create(lease, id(), 1));
         tasks.fail(lease, "disabled"); // Revocation must not prevent durable cleanup.
@@ -245,7 +245,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("11", flyway.info().current().getVersion().getVersion());
+        assertEquals("12", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()

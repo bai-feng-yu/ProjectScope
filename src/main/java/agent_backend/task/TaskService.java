@@ -59,6 +59,12 @@ public class TaskService {
         return RunDetailResponse.from(requireTask(runId));
     }
 
+    @Transactional
+    public RunDetailResponse cancel(String runId) {
+        tasks.cancelOwned(runId, TaskIdentity.current().userId());
+        return RunDetailResponse.from(requireTask(runId));
+    }
+
     @Transactional(readOnly = true)
     public List<RunAttemptResponse> getAttempts(String runId) {
         requireTask(runId);

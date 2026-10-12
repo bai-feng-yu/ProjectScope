@@ -38,7 +38,7 @@ class RunAttemptUpgradeTests {
                 + "VALUES (?,?,'queued',2,'old_tool','{}')",queued,step);
 
         var upgraded = Flyway.configure().dataSource(source).load();
-        assertEquals(8, upgraded.migrate().migrationsExecuted);
+        assertEquals(9, upgraded.migrate().migrationsExecuted);
         assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM run_event WHERE event_type='run.imported' AND seq=1", Integer.class));
         assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task WHERE last_event_seq=1", Integer.class));
         assertEquals(0, upgraded.migrate().migrationsExecuted);
