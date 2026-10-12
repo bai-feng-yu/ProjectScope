@@ -20,4 +20,13 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Revocation does not block durable failure cleanup. No user-account connector or model-selected credentials are enabled.
 - New Conversation/Memory/Schedule resources must apply the same ownership checks when added.
 
+## M3 — Persistent conversation API
+
+- Conversations and messages are user-owned; cross-user lookups return 404.
+- Message submission requires an Idempotency-Key; replay never calls the model twice.
+- User messages survive model failure; successful replies are published atomically.
+- Only one synchronous turn is pending per conversation. A new submission expires pending turns older than three minutes; there is no automatic replay.
+- Model I/O holds no database transaction. The minimal UI will be delivered with the research workflow.
+- Real MySQL tests cover isolation, idempotency, failed replies and stale pending turns.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

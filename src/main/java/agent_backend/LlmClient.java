@@ -59,6 +59,21 @@ public class LlmClient {
             request.put("tool_choice", "auto");
         }
 
+        return post(request);
+    }
+
+    public String completeText(String system, List<Map<String, String>> messages) {
+        validateConfiguration();
+        var all = new ArrayList<Map<String, String>>();
+        all.add(Map.of("role", "system", "content", system));
+        all.addAll(messages);
+        var decision = parseDecision(post(Map.of("model", model, "messages", all)));
+        if (decision.getDecisionType() != LlmDecision.DecsionType.FINAL_ANSWER)
+            throw new IllegalStateException("Text-only reply required");
+        return decision.getFinalAnswer();
+    }
+
+    private Map<String, Object> post(Map<String, Object> request) {
         try {
             @SuppressWarnings("unchecked")
             Map<String, Object> response = restClient.post()
