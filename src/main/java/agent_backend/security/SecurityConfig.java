@@ -19,8 +19,11 @@ public class SecurityConfig {
                 // Only Authorization: Bearer is supported; no cookie/session authentication.
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .headers(headers -> headers.contentSecurityPolicy(policy -> policy.policyDirectives(
+                        "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")))
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
+                        .requestMatchers(org.springframework.http.HttpMethod.GET, "/", "/index.html", "/app.js", "/app.css").permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resource -> resource.jwt(Customizer.withDefaults()))
                 .addFilterAfter(new AccountAccessFilter(access),

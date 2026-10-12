@@ -76,4 +76,12 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Results use the same conversation/Run publication path. Resume may trigger one overdue slot; it does not replay every missed week.
 - No arbitrary cron, automatic retries, multihost capacity guarantee or proactive external writes are included.
 
+## M3 / M6 — Minimal local web interface
+
+- Spring Boot serves a responsive buildless interface at /. Only the HTML/CSS/JS shell is public; all data APIs still require JWT authentication.
+- Supports conversation creation, chat, candidate confirmation/replacement, memory correction/deletion, research submission, authenticated SSE, cancellation and weekly schedules.
+- JWT is retained in page memory only. Disconnect clears displayed user data; late responses from older sessions cannot repopulate it.
+- User/model content renders as text, not HTML. Message and schedule retries reuse their request key while the request payload is unchanged.
+- Static serving, JavaScript syntax and security-filter checks are automated. Visual/browser interaction verification depends on an available browser connection.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

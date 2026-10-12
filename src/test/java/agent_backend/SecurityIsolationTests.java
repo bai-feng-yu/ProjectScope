@@ -111,6 +111,15 @@ class SecurityIsolationTests {
         verifyNoInteractions(tasks, steps, calls);
     }
 
+    @Test void publicUiDoesNotOpenPersonalDataApis() throws Exception {
+        for (String path : List.of("/", "/index.html", "/app.js", "/app.css"))
+            mvc.perform(get(path)).andExpect(status().isOk());
+        for (String path : List.of("/conversations", "/memories", "/schedules"))
+            mvc.perform(get(path)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/conversations").contentType(MediaType.APPLICATION_JSON).content("{\"title\":\"test\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
     @Test void ownerCanReadButAnotherUserCannotReadDetailsStepsOrStream() throws Exception {
         String alice = "Bearer " + token("alice");
         String bob = "Bearer " + token("bob");
