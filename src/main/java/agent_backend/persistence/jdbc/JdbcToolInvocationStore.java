@@ -21,11 +21,14 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
     private final JdbcTemplate jdbc;
     private final ObjectMapper mapper;
     private final JdbcLeaseGuard leases;
+    private final agent_backend.toolRegistry.ToolRegistry registry;
 
-    public JdbcToolInvocationStore(JdbcTemplate jdbc, ObjectMapper mapper, JdbcLeaseGuard leases) {
+    public JdbcToolInvocationStore(JdbcTemplate jdbc, ObjectMapper mapper, JdbcLeaseGuard leases,
+            agent_backend.toolRegistry.ToolRegistry registry) {
         this.jdbc = jdbc;
         this.mapper = mapper;
         this.leases = leases;
+        this.registry = registry;
     }
 
     @Override
@@ -40,11 +43,23 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
         for (int i = 0; i < calls.size(); i++) {
             ToolInvocation call = calls.get(i);
             String id = UUID.randomUUID().toString();
+            var policy = agent_backend.tool.RecoveryPolicy.MANUAL_ONLY;
+            String version = "missing";
+            agent_backend.tool.AgentTool<?, ?> adapter = null;
+            try {
+                adapter = registry.getTool(call.toolName());
+            } catch (IllegalArgumentException missing) { /* Persist missing tools as explicit failures. */ }
+            if (adapter != null) {
+                policy = adapter.recoveryPolicy();
+                version = adapter.recoveryVersion();
+            }
             jdbc.update("""
                     INSERT INTO agent_tool_call
-                        (invocation_id, step_id, tool_call_id, call_order, tool_name, arguments)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """, id, stepId, call.toolCallId(), i + 1, call.toolName(), mapper.writeValueAsString(call.arguments()));
+                        (invocation_id, step_id, tool_call_id, call_order, tool_name, arguments,
+                         idempotency_key, recovery_policy, recovery_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, id, stepId, call.toolCallId(), i + 1, call.toolName(), mapper.writeValueAsString(call.arguments()),
+                    id, policy.name(), version);
             JdbcRunEvents.append(jdbc, lease.taskId(), "tool.queued", lease.attemptId(), stepId, id, "PENDING");
             ids.add(id);
         }
@@ -55,6 +70,20 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
     @Transactional
     public void start(TaskLease lease, String invocationId) {
         leases.lock(lease);
+        // Queue-time capability snapshot cannot silently change before execution.
+        var contracts = jdbc.queryForList("""
+                SELECT c.tool_name,c.recovery_policy,c.recovery_version FROM agent_tool_call c
+                JOIN agent_step s ON s.step_id=c.step_id WHERE c.invocation_id=? AND s.task_id=?
+                """, invocationId, lease.taskId());
+        if (!contracts.isEmpty()) {
+            var contract = contracts.getFirst();
+            if (!"missing".equals(contract.get("recovery_version")) && !"legacy".equals(contract.get("recovery_version"))) {
+                var adapter = registry.getTool((String) contract.get("tool_name"));
+                Assert.state(adapter.recoveryPolicy().name().equals(contract.get("recovery_policy"))
+                        && adapter.recoveryVersion().equals(contract.get("recovery_version")),
+                        "Tool adapter changed after queueing");
+            }
+        }
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_tool_call c
                 JOIN agent_step s ON s.step_id = c.step_id
@@ -63,6 +92,10 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
                 WHERE c.invocation_id = ? AND c.status = 'PENDING' AND s.status = 'RUNNING' AND t.status = 'RUNNING' AND t.task_id = ?
                 """, invocationId, lease.taskId()), "start tool call", invocationId);
         JdbcRunEvents.tool(jdbc, lease.taskId(), lease.attemptId(), invocationId, "RUNNING");
+        jdbc.update("""
+                INSERT INTO tool_execution_attempt(execution_id,invocation_id,run_id,run_attempt_id,status)
+                VALUES (?,?,?,?,'RUNNING')
+                """, UUID.randomUUID().toString(), invocationId, lease.taskId(), lease.attemptId());
     }
 
     @Override
@@ -70,8 +103,10 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
     public void finish(TaskLease lease, String invocationId, ToolResult<?> result) {
         Assert.notNull(result, "Tool result must not be null");
         leases.lock(lease);
-        String status = result instanceof ToolFailure<?> ? "FAILED" : "SUCCEEDED";
-        String reason = result instanceof ToolFailure<?> failure ? failure.errorMessage() : null;
+        String status = result instanceof agent_backend.tool.result.ToolUncertain<?> ? "UNKNOWN"
+                : result instanceof ToolFailure<?> ? "FAILED" : "SUCCEEDED";
+        String reason = result instanceof ToolFailure<?> failure ? failure.errorMessage()
+                : result instanceof agent_backend.tool.result.ToolUncertain<?> uncertain ? uncertain.errorMessage() : null;
         JdbcStoreSupport.requireOne(jdbc.update("""
                 UPDATE agent_tool_call SET status = ?, result = ?, failure_reason = ?, finished_at = UTC_TIMESTAMP(6)
                 WHERE invocation_id = ? AND status = 'RUNNING' AND tool_call_id = ?
@@ -79,6 +114,11 @@ public class JdbcToolInvocationStore implements ToolInvocationStore {
                 """, status, mapper.writeValueAsString(result), reason, invocationId, result.toolCallId(), lease.taskId()),
                 "finish tool call", invocationId);
         JdbcRunEvents.tool(jdbc, lease.taskId(), lease.attemptId(), invocationId, status);
+        JdbcStoreSupport.requireOne(jdbc.update("""
+                UPDATE tool_execution_attempt SET status=?,result=?,failure_reason=?,ended_at=UTC_TIMESTAMP(6)
+                WHERE invocation_id=? AND run_attempt_id=? AND status='RUNNING'
+                """, status, mapper.writeValueAsString(result), reason, invocationId, lease.attemptId()),
+                "finish tool execution", invocationId);
     }
 
     @Override

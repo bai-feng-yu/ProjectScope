@@ -19,7 +19,7 @@ public class ToolDescriptorFactory {
                 schema(tool.inputType()),
                 schema(tool.outputType()),
                 tool.inputExample(),
-                tool.outputExample());
+                tool.outputExample(), tool.recoveryPolicy());
     }
 
     /**

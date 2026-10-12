@@ -1,5 +1,7 @@
 # MySQL 持久化与任务接口：阶段 1–5
 
+> V6 更新：工具恢复策略、稳定幂等键、执行记录与受鉴权恢复入口见 [tool-recovery.md](tool-recovery.md)。不包含自动重试或 Run 续跑。
+
 > V5 更新：Run 持久化事件、同事务写入和可回放 SSE 已实现，见 [run-events.md](run-events.md)。旧 /tasks 快照流保持兼容；/runs 事件流使用新协议。
 
 > 后续变更：V3 增加 [身份与任务归属](authentication.md)；V4 将租约、心跳与 Worker 移至独立 Attempt，详见 [Run / Attempt 实现](run-attempts.md)。下文保留阶段 1–5 的历史说明，旧表结构和租约 SQL 以 V4 文档及当前代码为准。
@@ -60,7 +62,7 @@ DATETIME(6) 和 Java LocalDateTime 均按 UTC 解释。连接参数强制 MySQL 
 - Task：PENDING → RUNNING → COMPLETED / FAILED；PENDING 在明确无法执行时也可失败。
 - Step：RUNNING → COMPLETED / FAILED。
 - Call：PENDING → RUNNING → SUCCEEDED / FAILED / UNKNOWN；未开始的调用中止时可标 FAILED。
-- COMPLETED、SUCCEEDED、FAILED、UNKNOWN 都是各自状态域内的终态。
+- COMPLETED、SUCCEEDED、FAILED 是各自状态域内的终态。V6 中 UNKNOWN 可通过受鉴权、可审计的结果核对转为 SUCCEEDED，但不能直接重跑；原始执行尝试仍保留 UNKNOWN。
 - UNKNOWN 表示可能已经产生副作用但结果未确认，不允许自动重试。
 
 数据库 CHECK 约束目前只限制合法状态值和正序号，不负责判断旧状态到新状态的转换。

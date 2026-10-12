@@ -108,7 +108,7 @@ class AgentRuntimeTests {
     void modelFailurePreservesCompletedToolSteps() {
         when(llm.parseDecision(any())).thenReturn(step().getDecision())
                 .thenThrow(new IllegalStateException("Invalid model response"));
-        when(tools.callTool("call-1", "test_tool", Map.of())).thenAnswer(invocation -> step().getToolResults().getFirst());
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-1"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation -> step().getToolResults().getFirst());
 
         var state = runner(3).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
@@ -120,7 +120,7 @@ class AgentRuntimeTests {
     @Test
     void unexpectedDispatcherFailureBecomesFailedState() {
         when(llm.parseDecision(any())).thenReturn(step().getDecision());
-        when(tools.callTool("call-1", "test_tool", Map.of())).thenThrow(new IllegalStateException());
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-1"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenThrow(new IllegalStateException());
         var state = runner(3).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
         assertEquals("IllegalStateException", state.getFailureReason());
@@ -129,7 +129,7 @@ class AgentRuntimeTests {
     @Test
     void toolFailureCanBeFollowedBySuccessfulAnswer() {
         when(llm.parseDecision(any())).thenReturn(step().getDecision(), LlmDecision.finalAnswer("Recovered"));
-        when(tools.callTool("call-1", "test_tool", Map.of())).thenReturn(
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-1"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenReturn(
                 new ToolFailure<>("call-1", "test_tool", "INVALID_ARGUMENT", "Missing field"));
         var state = runner(3).run("task");
         assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
@@ -141,7 +141,7 @@ class AgentRuntimeTests {
     @Test
     void stepLimitReturnsFailureWithHistoryInsteadOfThrowing() {
         when(llm.parseDecision(any())).thenReturn(step().getDecision());
-        when(tools.callTool("call-1", "test_tool", Map.of())).thenAnswer(invocation -> step().getToolResults().getFirst());
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-1"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation -> step().getToolResults().getFirst());
         var state = runner(1).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
         assertEquals("Agent exceeded maximum steps: 1", state.getFailureReason());
@@ -162,14 +162,14 @@ class AgentRuntimeTests {
                 new agent_backend.tool.ToolInvocation("first", "test_tool", Map.of("value", 1)),
                 new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of("value", 2)));
         when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null), LlmDecision.finalAnswer("done"));
-        when(tools.callTool("first", "test_tool", Map.of("value", 1)))
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("first"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of("value", 1)), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class)))
                 .thenReturn(new ToolFailure<>("first", "test_tool", "INVALID_ARGUMENT", "Invalid"));
-        when(tools.callTool("second", "test_tool", Map.of("value", 2)))
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("second"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of("value", 2)), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class)))
                 .thenAnswer(invocation -> new ToolSuccess<>("second", "test_tool", "ok"));
         var state = runner(2).run("task");
         var order = org.mockito.Mockito.inOrder(tools);
-        order.verify(tools).callTool("first", "test_tool", Map.of("value", 1));
-        order.verify(tools).callTool("second", "test_tool", Map.of("value", 2));
+        order.verify(tools).callTool(org.mockito.ArgumentMatchers.eq("first"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of("value", 1)), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
+        order.verify(tools).callTool(org.mockito.ArgumentMatchers.eq("second"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of("value", 2)), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
         assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
         assertEquals(1, state.getSteps().size());
         assertEquals(List.of("first", "second"), state.getSteps().getFirst().getToolResults()
@@ -193,7 +193,7 @@ class AgentRuntimeTests {
                 new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of()));
         when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null), LlmDecision.finalAnswer("done"));
         org.mockito.Mockito.doReturn(List.of("inv-1", "inv-2")).when(invocations).createBatch(any(), any(), any());
-        when(tools.callTool(any(), any(), any())).thenAnswer(invocation ->
+        when(tools.callTool(any(), any(), any(), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation ->
                 new ToolSuccess<>(invocation.getArgument(0), "test_tool", "ok"));
         var state = runner(2).run("task");
         var order = org.mockito.Mockito.inOrder(tasks, steps, llm, invocations, tools);
@@ -205,10 +205,10 @@ class AgentRuntimeTests {
         order.verify(llm).parseDecision(any());
         order.verify(invocations).createBatch(any(), any(), org.mockito.ArgumentMatchers.eq(calls));
         order.verify(invocations).start(any(), org.mockito.ArgumentMatchers.eq("inv-1"));
-        order.verify(tools).callTool("first", "test_tool", Map.of());
+        order.verify(tools).callTool(org.mockito.ArgumentMatchers.eq("first"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
         order.verify(invocations).finish(any(), org.mockito.ArgumentMatchers.eq("inv-1"), any());
         order.verify(invocations).start(any(), org.mockito.ArgumentMatchers.eq("inv-2"));
-        order.verify(tools).callTool("second", "test_tool", Map.of());
+        order.verify(tools).callTool(org.mockito.ArgumentMatchers.eq("second"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
         order.verify(invocations).finish(any(), org.mockito.ArgumentMatchers.eq("inv-2"), any());
         order.verify(steps).complete(any(), org.mockito.ArgumentMatchers.eq(state.getSteps().getFirst().getStepId()));
         order.verify(llm).request(any());
@@ -224,13 +224,13 @@ class AgentRuntimeTests {
                 new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of()));
         when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(calls, null));
         org.mockito.Mockito.doReturn(List.of("inv-1", "inv-2")).when(invocations).createBatch(any(), any(), any());
-        when(tools.callTool("first", "test_tool", Map.of()))
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("first"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class)))
                 .thenAnswer(invocation -> new ToolSuccess<>("first", "test_tool", "ok"));
         org.mockito.Mockito.doThrow(new IllegalStateException("database write failed"))
                 .when(invocations).finish(any(), org.mockito.ArgumentMatchers.eq("inv-1"), any());
         var state = runner(2).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
-        org.mockito.Mockito.verify(tools, org.mockito.Mockito.never()).callTool("second", "test_tool", Map.of());
+        org.mockito.Mockito.verify(tools, org.mockito.Mockito.never()).callTool(org.mockito.ArgumentMatchers.eq("second"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
         org.mockito.Mockito.verify(invocations).abortUnfinished(any(), any(), org.mockito.ArgumentMatchers.contains("database write failed"));
         org.mockito.Mockito.verify(steps).fail(any(), any(), any());
         org.mockito.Mockito.verify(tasks).fail(new TaskLease(state.getTaskId(), "test-worker"), state.getFailureReason());
@@ -317,14 +317,14 @@ class AgentRuntimeTests {
         when(llm.parseDecision(any())).thenReturn(LlmDecision.toolCalls(List.of(
                 new agent_backend.tool.ToolInvocation("first", "test_tool", Map.of()),
                 new agent_backend.tool.ToolInvocation("second", "test_tool", Map.of())), null));
-        when(tools.callTool("first", "test_tool", Map.of())).thenAnswer(invocation -> {
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("first"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation -> {
             org.mockito.Mockito.doThrow(new agent_backend.persistence.LeaseLostException(lease.taskId()))
                     .when(session).check();
             return new ToolSuccess<>("first", "test_tool", "late result");
         });
         var state = runner(2).run("task");
         assertEquals(AgentState.AgentStateType.FAILED, state.getAgentStateType());
-        org.mockito.Mockito.verify(tools, org.mockito.Mockito.never()).callTool("second", "test_tool", Map.of());
+        org.mockito.Mockito.verify(tools, org.mockito.Mockito.never()).callTool(org.mockito.ArgumentMatchers.eq("second"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
         org.mockito.Mockito.verify(invocations, org.mockito.Mockito.never()).finish(any(), any(), any());
         org.mockito.Mockito.verify(session).close();
     }

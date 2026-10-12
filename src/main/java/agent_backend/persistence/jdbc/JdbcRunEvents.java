@@ -42,6 +42,10 @@ final class JdbcRunEvents {
             jdbc.update("UPDATE agent_tool_call SET status=?, failure_reason=?, finished_at=UTC_TIMESTAMP(6) "
                     + "WHERE invocation_id=?", status, reason, id);
             tool(jdbc, runId, attemptId, id, status);
+            jdbc.update("""
+                    UPDATE tool_execution_attempt SET status='UNKNOWN',failure_reason=?,ended_at=UTC_TIMESTAMP(6)
+                    WHERE invocation_id=? AND status='RUNNING'
+                    """, reason, id);
         }
     }
 }

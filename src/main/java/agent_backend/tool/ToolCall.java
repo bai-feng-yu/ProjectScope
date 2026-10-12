@@ -22,6 +22,10 @@ public class ToolCall {
     }
 
     public ToolResult<?> callTool(String toolCallId, String toolName, Object arguments) {
+        return callTool(toolCallId, toolName, arguments, null);
+    }
+
+    public ToolResult<?> callTool(String toolCallId, String toolName, Object arguments, ToolExecutionContext context) {
         Assert.hasText(toolCallId, "toolCallId must not be blank");
         AgentTool<?, ?> tool;
         try {
@@ -35,7 +39,7 @@ public class ToolCall {
             if (!errors.isEmpty()) {
                 return new ToolFailure<>(toolCallId, toolName, "INVALID_ARGUMENT", String.join("; ", errors));
             }
-            return execute(toolCallId, tool, arguments);
+            return execute(toolCallId, tool, arguments, context);
         } catch (Exception e) {
             return new ToolFailure<>(
                 toolCallId, toolName,
@@ -44,7 +48,7 @@ public class ToolCall {
         }
     }
 
-    private <I, O> ToolResult<O> execute(String toolCallId, AgentTool<I, O> tool, Object arguments) {
+    private <I, O> ToolResult<O> execute(String toolCallId, AgentTool<I, O> tool, Object arguments, ToolExecutionContext context) {
         I input;
         try {
             input = objectMapper.convertValue(arguments, tool.inputType());
@@ -53,11 +57,11 @@ public class ToolCall {
         }
 
         try {
-            return new ToolSuccess<>(toolCallId, tool.name(), tool.execute(input));
+            return new ToolSuccess<>(toolCallId, tool.name(), tool.execute(input, context));
         } catch (InvalidToolArgumentException e) {
             return new ToolFailure<>(toolCallId, tool.name(), "INVALID_ARGUMENT", e.getMessage());
         } catch (Exception e) {
-            return new ToolFailure<>(toolCallId, tool.name(), "TOOL_EXECUTION_FAILED", e.getMessage());
+            return new agent_backend.tool.result.ToolUncertain<>(toolCallId, tool.name(), e.getMessage());
         }
     }
 }

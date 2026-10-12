@@ -140,4 +140,17 @@ class SecurityIsolationTests {
         verifyNoInteractions(steps, calls);
         verify(tasks, never()).find(anyString());
     }
+
+    @Test void recoveryRoutesRequireVerifiedJwtAndDoNotTrustOwnerHeaders() throws Exception {
+        String path="/runs/"+UUID.randomUUID()+"/tools/"+UUID.randomUUID()+"/recovery";
+        String body="{\"requestId\":\""+UUID.randomUUID()+"\",\"action\":\"RECONCILE\"}";
+        mvc.perform(get(path).header("X-User-Id","alice")).andExpect(status().isUnauthorized());
+        mvc.perform(post(path).contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(eventJdbc);
+        mvc.perform(get(path).header("Authorization","Bearer "+token("bob")).header("X-User-Id","alice"))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(path).header("Authorization","Bearer "+token("bob"))
+                .contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isNotFound());
+    }
 }

@@ -8,6 +8,9 @@ import agent_backend.tool.AgentTool;
 
 @Component
 public class CalculateTool implements AgentTool<CalculateInput, CalculateOutput>    {
+    @Override public agent_backend.tool.RecoveryPolicy recoveryPolicy() {
+        return agent_backend.tool.RecoveryPolicy.READ_ONLY;
+    }
 
     @Override
     public Class<CalculateInput> inputType() {

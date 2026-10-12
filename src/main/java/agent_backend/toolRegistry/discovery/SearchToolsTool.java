@@ -11,6 +11,9 @@ import agent_backend.toolRegistry.ToolRegistry;
 
 @Component
 public class SearchToolsTool implements AgentTool<SearchToolsInput, SearchToolsOutput> {
+    @Override public agent_backend.tool.RecoveryPolicy recoveryPolicy() {
+        return agent_backend.tool.RecoveryPolicy.READ_ONLY;
+    }
     private final ObjectProvider<ToolRegistry> registry;
 
     public SearchToolsTool(ObjectProvider<ToolRegistry> registry) {

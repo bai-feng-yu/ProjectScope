@@ -104,11 +104,11 @@ class AgentBackendApplicationTests {
 			}
 		};
 		var dispatcher = new ToolCall(new ToolRegistry(List.of(failingTool), descriptorFactory), mapper, schemaValidator);
-		var failed = assertInstanceOf(ToolFailure.class,
+		var failed = assertInstanceOf(agent_backend.tool.result.ToolUncertain.class,
 				dispatcher.callTool("call-4", "failing_tool",
 						Map.of("operation", "add", "left", 1, "right", 2)));
 		assertEquals("call-4", failed.toolCallId());
-		assertEquals("TOOL_EXECUTION_FAILED", failed.errorCode());
+		assertEquals("business failure", failed.errorMessage());
 	}
 
 	@Test

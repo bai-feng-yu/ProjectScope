@@ -30,12 +30,15 @@ public class SequentialToolBatchExecutor implements ToolBatchExecutor {
             session.check();
             store.start(lease, ids.get(i));
             session.check();
-            ToolResult<?> result = toolCall.callTool(call.toolCallId(), call.toolName(), call.arguments());
+            ToolResult<?> result = toolCall.callTool(call.toolCallId(), call.toolName(), call.arguments(),
+                    context.forInvocation(ids.get(i)));
             Assert.state(result != null && call.toolCallId().equals(result.toolCallId()),
                     "Tool result ID must match its call");
             // Commit each result before executing the next call. Never retry a side effect here.
             session.check();
             store.finish(lease, ids.get(i), result);
+            if (result instanceof agent_backend.tool.result.ToolUncertain<?>)
+                throw new IllegalStateException("Tool outcome is UNKNOWN; recovery required: " + ids.get(i));
             results.add(result);
         }
         return List.copyOf(results);

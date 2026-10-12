@@ -1,5 +1,7 @@
 # 持久化 Run 事件与 SSE 回放
 
+> V6 更新：工具恢复策略、稳定幂等键、执行记录与受鉴权恢复入口见 [tool-recovery.md](tool-recovery.md)。不包含自动重试或 Run 续跑。
+
 ## 本批实现
 
 V5 增加 `agent_task.last_event_seq` 和 `run_event`。事件主键为 `(run_id, seq)`，每个 Run 从 1 单调递增。事件包含 `type`、`schemaVersion`（当前 1）、Run/Attempt/Step/Invocation 标识、UTC 时间和状态载荷。

@@ -184,7 +184,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("5", flyway.info().current().getVersion().getVersion());
+        assertEquals("6", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()
@@ -309,7 +309,7 @@ class MySqlMigrationTests {
             return toolResponse(2);
         }).doReturn(answerResponse()).when(llm).request(any());
         ToolCall tools = mock(ToolCall.class);
-        when(tools.callTool(any(), any(), any())).thenAnswer(invocation -> {
+        when(tools.callTool(any(), any(), any(), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation -> {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             String callId = invocation.getArgument(0);
             return callId.equals("call-1")
@@ -337,9 +337,9 @@ class MySqlMigrationTests {
         LlmClient llm = spy(client);
         doReturn(toolResponse(3)).when(llm).request(any());
         ToolCall tools = mock(ToolCall.class);
-        when(tools.callTool("call-1", "test_tool", Map.of()))
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-1"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class)))
                 .thenAnswer(invocation -> new ToolSuccess<>("call-1", "test_tool", "saved"));
-        when(tools.callTool("call-2", "test_tool", Map.of()))
+        when(tools.callTool(org.mockito.ArgumentMatchers.eq("call-2"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class)))
                 .thenThrow(new IllegalStateException("execution interrupted"));
         AgentState state = runner(llm, tools, 2).run("task");
         var task = tasks.find(state.getTaskId()).orElseThrow();
@@ -353,7 +353,7 @@ class MySqlMigrationTests {
         assertTrue(calls.getFirst().result().contains("saved"));
         assertNull(calls.get(1).result());
         assertNull(calls.get(2).startedAt());
-        verify(tools, never()).callTool("call-3", "test_tool", Map.of());
+        verify(tools, never()).callTool(org.mockito.ArgumentMatchers.eq("call-3"), org.mockito.ArgumentMatchers.eq("test_tool"), org.mockito.ArgumentMatchers.eq(Map.of()), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class));
     }
 
     @Test
@@ -387,7 +387,7 @@ class MySqlMigrationTests {
         assertNull(failedStep.modelResponse());
 
         doReturn(toolResponse(1)).when(llm).request(any());
-        when(tools.callTool(any(), any(), any())).thenAnswer(invocation ->
+        when(tools.callTool(any(), any(), any(), org.mockito.ArgumentMatchers.any(agent_backend.tool.ToolExecutionContext.class))).thenAnswer(invocation ->
                 new ToolSuccess<>("call-1", "test_tool", "saved"));
         AgentState limited = runner(llm, tools, 1).run("task");
         var task = tasks.find(limited.getTaskId()).orElseThrow();

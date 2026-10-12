@@ -25,6 +25,9 @@ public class ToolRegistry {
         Map<String, ToolDescriptor> registeredDescriptors = new LinkedHashMap<>();
 
         for (AgentTool<?,?> tool : toolList) {
+            org.springframework.util.Assert.notNull(tool.recoveryPolicy(), "Tool recoveryPolicy is required");
+            org.springframework.util.Assert.hasText(tool.recoveryVersion(), "Tool recoveryVersion is required");
+            org.springframework.util.Assert.isTrue(tool.recoveryVersion().length() <= 64, "Tool recoveryVersion is too long");
             if (registeredTools.containsKey(tool.name())) {
                 throw new IllegalArgumentException("Duplicate tool name: " + tool.name());
             }

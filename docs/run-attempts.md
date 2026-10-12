@@ -1,5 +1,7 @@
 # Run / Attempt 实现
 
+> V6 更新：工具恢复策略、稳定幂等键、执行记录与受鉴权恢复入口见 [tool-recovery.md](tool-recovery.md)。不包含自动重试或 Run 续跑。
+
 > V5 更新：Run 持久化事件、同事务写入和可回放 SSE 已实现，见 [run-events.md](run-events.md)。旧 /tasks 快照流保持兼容；/runs 事件流使用新协议。
 
 ## 范围

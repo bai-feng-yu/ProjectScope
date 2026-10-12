@@ -10,6 +10,9 @@ import agent_backend.toolRegistry.ToolRegistry;
 
 @Component
 public class DescribeToolTool implements AgentTool<DescribeToolInput, ToolDescriptor> {
+    @Override public agent_backend.tool.RecoveryPolicy recoveryPolicy() {
+        return agent_backend.tool.RecoveryPolicy.READ_ONLY;
+    }
     private final ObjectProvider<ToolRegistry> registry;
 
     public DescribeToolTool(ObjectProvider<ToolRegistry> registry) {
