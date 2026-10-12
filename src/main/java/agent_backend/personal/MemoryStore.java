@@ -29,8 +29,15 @@ public class MemoryStore {
 
     public boolean enabled(String user) {
         access.requireUser(user);
-        return jdbc.queryForList("SELECT user_id FROM app_user WHERE user_id=? AND memory_enabled=FALSE",
+        return jdbc.queryForList("SELECT user_id FROM app_user WHERE user_id=? AND memory_enabled=FALSE FOR SHARE",
                 String.class, user).isEmpty();
+    }
+
+    public List<Memory> active(String user) {
+        access.requireUser(user);
+        // Candidate volume must never hide confirmed memories from retrieval.
+        return jdbc.query("SELECT * FROM personal_memory WHERE user_id=? AND status='ACTIVE' ORDER BY updated_at DESC LIMIT 100",
+                DataClassRowMapper.newInstance(Memory.class), user);
     }
 
     @Transactional
@@ -60,7 +67,8 @@ public class MemoryStore {
         for (var candidate : candidates.stream().limit(3).toList()) {
             if (candidate.topic() == null || candidate.topic().isBlank() || candidate.topic().length() > 80
                     || candidate.content() == null || candidate.content().isBlank() || candidate.content().length() > 2000
-                    || candidate.kind() == null || !List.of("FACT","PREFERENCE","INFERENCE").contains(candidate.kind())) continue;
+                    || candidate.kind() == null || !List.of("FACT","PREFERENCE","INFERENCE").contains(candidate.kind())
+                    || MemoryPrivacy.containsCredential(candidate.topic() + " " + candidate.content())) continue;
             jdbc.update("""
                     INSERT INTO personal_memory(memory_id,user_id,source_message_id,topic,kind,content)
                     VALUES (?,?,?,?,?,?)
@@ -73,7 +81,7 @@ public class MemoryStore {
         lockUser(user);
         var memory = owned(user, id, version);
         if (!"CANDIDATE".equals(memory.status())) throw conflict();
-        var active = jdbc.queryForList("SELECT memory_id FROM personal_memory WHERE user_id=? AND topic=? AND status='ACTIVE'",
+        var active = jdbc.queryForList("SELECT memory_id FROM personal_memory WHERE user_id=? AND topic=? AND status='ACTIVE' FOR UPDATE",
                 String.class, user, memory.topic());
         if (!active.isEmpty() && !replaceExisting)
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Topic already has a confirmed memory; explicitly replace it");
@@ -87,6 +95,8 @@ public class MemoryStore {
         lockUser(user);
         var memory = owned(user, id, version);
         if (!"ACTIVE".equals(memory.status())) throw conflict();
+        if (MemoryPrivacy.containsCredential(content))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Credentials cannot be stored as personal memory");
         supersede(user, memory.topic());
         String next = UUID.randomUUID().toString();
         jdbc.update("""
@@ -119,7 +129,7 @@ public class MemoryStore {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Source message not found");
     }
     private Memory owned(String user, String id, long version) {
-        var memory = jdbc.query("SELECT * FROM personal_memory WHERE user_id=? AND memory_id=? AND status<>'DELETED'",
+        var memory = jdbc.query("SELECT * FROM personal_memory WHERE user_id=? AND memory_id=? AND status<>'DELETED' FOR UPDATE",
                 DataClassRowMapper.newInstance(Memory.class), user, id).stream().findFirst()
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Memory not found"));
         if (memory.version() != version) throw conflict();

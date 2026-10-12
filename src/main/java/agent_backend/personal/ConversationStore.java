@@ -55,7 +55,8 @@ public class ConversationStore {
     public Turn begin(String userId, String conversationId, String key, String content) {
         requireOwned(userId, conversationId, true);
         String hash = RequestKeys.hash(RequestKeys.validate(key));
-        var existing = jdbc.query("SELECT * FROM conversation_message WHERE conversation_id=? AND request_key=?",
+        // A locking read sees the winner after waiting, even if an earlier access check established an RR snapshot.
+        var existing = jdbc.query("SELECT * FROM conversation_message WHERE conversation_id=? AND request_key=? FOR UPDATE",
                 DataClassRowMapper.newInstance(Message.class), conversationId, hash);
         if (!existing.isEmpty()) {
             var message = existing.getFirst();
@@ -69,7 +70,7 @@ public class ConversationStore {
                 WHERE conversation_id=? AND role='USER' AND status='PENDING'
                     AND created_at<UTC_TIMESTAMP(6)-INTERVAL 3 MINUTE
                 """, conversationId);
-        if (!jdbc.queryForList("SELECT message_id FROM conversation_message WHERE conversation_id=? AND status='PENDING'",
+        if (!jdbc.queryForList("SELECT message_id FROM conversation_message WHERE conversation_id=? AND status='PENDING' FOR UPDATE",
                 String.class, conversationId).isEmpty())
             throw new ResponseStatusException(HttpStatus.CONFLICT, "A reply is already in progress");
         String id = UUID.randomUUID().toString();

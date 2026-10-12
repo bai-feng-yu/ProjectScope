@@ -17,7 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Repository
 public class WeeklyResearchStore {
     public record Schedule(String scheduleId, String conversationId, String content, LocalDateTime nextFireAt,
-            boolean paused, String lastRunId, String lastOutcome) {}
+            boolean paused, String lastRunId, String lastOutcome, String timeZone) {}
     private final JdbcTemplate jdbc;
     private final ConversationStore conversations;
     private final ResearchStore research;

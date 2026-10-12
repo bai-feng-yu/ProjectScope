@@ -29,7 +29,7 @@ public class ResearchStore {
     public Submission submit(String user, String conversation, String key, String content) {
         conversations.requireOwned(user, conversation, true);
         String hash = RequestKeys.hash(RequestKeys.validate(key));
-        var existing = jdbc.queryForList("SELECT message_id,run_id,content FROM conversation_message WHERE conversation_id=? AND request_key=?",
+        var existing = jdbc.queryForList("SELECT message_id,run_id,content FROM conversation_message WHERE conversation_id=? AND request_key=? FOR UPDATE",
                 conversation, hash);
         if (!existing.isEmpty()) {
             var row = existing.getFirst();
@@ -69,7 +69,7 @@ public class ResearchStore {
         String user = (String) message.get("user_id");
         String conversation = (String) message.get("conversation_id");
         conversations.requireOwned(user, conversation, true);
-        if (!jdbc.queryForList("SELECT message_id FROM conversation_message WHERE reply_to=?", messageId).isEmpty()) return;
+        if (!jdbc.queryForList("SELECT message_id FROM conversation_message WHERE reply_to=? FOR UPDATE", messageId).isEmpty()) return;
         var run = tasks.findOwned((String) message.get("run_id"), user).orElseThrow();
         boolean completed = agent_backend.persistence.model.TaskStatus.COMPLETED == run.status();
         if (!run.status().isTerminal()) return;

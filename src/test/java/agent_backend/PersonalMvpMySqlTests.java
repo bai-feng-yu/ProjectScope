@@ -21,7 +21,8 @@ class PersonalMvpMySqlTests {
     @Container static final MySQLContainer mysql = new MySQLContainer("mysql:8.4")
             .withCommand("--log-bin-trust-function-creators=1");
     @DynamicPropertySource static void database(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", mysql::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> mysql.getJdbcUrl() + (mysql.getJdbcUrl().contains("?") ? "&" : "?")
+                + "connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true");
         registry.add("spring.datasource.username", mysql::getUsername);
         registry.add("spring.datasource.password", mysql::getPassword);
     }
@@ -225,5 +226,71 @@ class PersonalMvpMySqlTests {
         jdbc.update("UPDATE scheduled_research SET next_fire_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE schedule_id=?", id);
         schedules.fire(id);
         assertNotEquals(fired.lastRunId(), schedules.list(user).getFirst().lastRunId());
+    }
+
+    @Test void credentialBearingSourcesAndCandidatesDoNotEnterMemory() {
+        String conversation = conversations.create(user, "Privacy");
+        var turn = conversations.begin(user, conversation, "secret", "api_key: test-secret-not-real");
+        memory.extract(user, turn.message().messageId(), turn.message().content());
+        verifyNoInteractions(model);
+        assertFalse(memories.reserveSource(user, turn.message().messageId()));
+        memories.candidates(user, turn.message().messageId(), java.util.List.of(
+                new MemoryStore.Candidate("credential", "FACT", "password: example-not-real")));
+        assertTrue(memories.list(user).isEmpty());
+    }
+
+    @Test void concurrentCancelAndFinalCompletionHaveOneConsistentTerminalOutcome() throws Exception {
+        String run = UUID.randomUUID().toString(), step = UUID.randomUUID().toString();
+        tasks.createOwned(run, "race", user);
+        var lease = tasks.start(new agent_backend.persistence.TaskLease(run, "worker"), 60000);
+        steps.create(lease, step, 1);
+        steps.saveResponse(lease, step, Map.of("answer", "done"));
+        var gate = new java.util.concurrent.CountDownLatch(1);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var completed = workers.submit(() -> {
+                gate.await();
+                try { tasks.completeFinal(lease, step, "done"); }
+                catch (agent_backend.persistence.LeaseLostException expected) { /* Cancellation won the Run lock. */ }
+                return null;
+            });
+            var cancelled = workers.submit(() -> { gate.await(); tasks.cancelOwned(run, user); return null; });
+            gate.countDown();
+            completed.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            cancelled.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        var status = tasks.find(run).orElseThrow().status();
+        assertTrue(status == agent_backend.persistence.model.TaskStatus.COMPLETED || status == agent_backend.persistence.model.TaskStatus.CANCELLED);
+        assertEquals(status == agent_backend.persistence.model.TaskStatus.COMPLETED ? "COMPLETED" : "FAILED",
+                steps.findByTask(run).getFirst().status().name());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM run_event WHERE run_id=? AND event_type IN ('run.completed','run.cancelled')", Integer.class, run));
+    }
+
+    @Test void concurrentWeeklyScansCreateExactlyOneRun() throws Exception {
+        String conversation = conversations.create(user, "Concurrent weekly");
+        String id = schedules.create(user, conversation, "Research", java.time.Instant.now().plusSeconds(3600), "weekly-race");
+        jdbc.update("UPDATE scheduled_research SET next_fire_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE schedule_id=?", id);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var one = workers.submit(() -> schedules.fire(id));
+            var two = workers.submit(() -> schedules.fire(id));
+            one.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            two.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM agent_task WHERE user_id=?", Integer.class, user));
+        assertEquals("Asia/Shanghai", schedules.list(user).getFirst().timeZone());
+    }
+
+    @Test void concurrentMessageAndResearchRetriesSeeTheCommittedWinner() throws Exception {
+        String conversation = conversations.create(user, "Concurrent conversation");
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var one = workers.submit(() -> conversations.begin(user, conversation, "same-chat", "hello"));
+            var two = workers.submit(() -> conversations.begin(user, conversation, "same-chat", "hello"));
+            var first = one.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            var second = two.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(first.message().messageId(), second.message().messageId());
+            assertNotEquals(first.created(), second.created());
+            var researchOne = workers.submit(() -> research.submit(user, conversation, "same-research", "query"));
+            var researchTwo = workers.submit(() -> research.submit(user, conversation, "same-research", "query"));
+            assertEquals(researchOne.get(10, java.util.concurrent.TimeUnit.SECONDS), researchTwo.get(10, java.util.concurrent.TimeUnit.SECONDS));
+        }
     }
 }

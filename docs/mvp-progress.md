@@ -37,6 +37,8 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - A processed-source ledger prevents replay from recreating deleted memory. Disabling memory prevents extraction and retrieval; existing confirmed records are retained until explicitly deleted.
 - Retrieval uses topic matching plus recent confirmed memories (up to eight), not embeddings. User corrections take precedence over memory.
 - Extraction failure never rolls back a saved reply. No background extraction retries are promised.
+- Credential-shaped sources/candidates are rejected by a conservative deterministic guard as well as the extraction prompt. This is not a general secret-detection guarantee.
+- Locking reads recheck current message keys and memory versions after waiting for a parent lock, avoiding stale MySQL repeatable-read decisions.
 
 ## M5 — Durable conversation / Run bridge
 
@@ -76,6 +78,7 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Scheduler row locking and atomic Run creation/slot advancement prevent duplicate triggers. Previous unfinished Runs or busy users cause the slot to be skipped.
 - Results use the same conversation/Run publication path. Resume may trigger one overdue slot; it does not replay every missed week.
 - No arbitrary cron, automatic retries, multihost capacity guarantee or proactive external writes are included.
+- The fixed Asia/Shanghai timezone is also stored and constrained in the database. Concurrent scans have a real MySQL regression test.
 
 ## M3 / M6 — Minimal local web interface
 

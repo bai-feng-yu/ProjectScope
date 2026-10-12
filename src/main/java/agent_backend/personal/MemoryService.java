@@ -20,7 +20,7 @@ public class MemoryService {
     public List<MemoryStore.Memory> relevant(String user, String query) {
         if (!store.enabled(user)) return List.of();
         String text = query.toLowerCase(Locale.ROOT);
-        return store.list(user).stream().filter(memory -> "ACTIVE".equals(memory.status()))
+        return store.active(user).stream()
                 .sorted(Comparator.<MemoryStore.Memory>comparingInt(memory ->
                         text.contains(memory.topic().toLowerCase(Locale.ROOT)) ? 1 : 0).reversed()
                         .thenComparing(MemoryStore.Memory::updatedAt, Comparator.reverseOrder()))
@@ -34,6 +34,7 @@ public class MemoryService {
     public void extract(String user, String messageId, String text) {
         try {
             if (!store.reserveSource(user, messageId)) return;
+            if (MemoryPrivacy.containsCredential(text)) return;
             String response = model.completeText("""
                     Extract at most three durable career facts or preferences from this user message.
                     Return ONLY JSON: {"memories":[{"topic":"short stable topic","kind":"FACT|PREFERENCE|INFERENCE","content":"..."}]}.

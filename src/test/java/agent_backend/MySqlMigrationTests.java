@@ -245,7 +245,7 @@ class MySqlMigrationTests {
 
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("13", flyway.info().current().getVersion().getVersion());
+        assertEquals("14", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()
