@@ -93,9 +93,8 @@ public class AgentRunner {
                     state.addStep(completedStep);
                 } else {
                     Assert.hasText(decision.getFinalAnswer(), "final answer must not be blank");
-                    steps.complete(lease, stepId);
+                    tasks.completeFinal(lease, stepId, decision.getFinalAnswer());
                     activeStepId = null;
-                    tasks.complete(lease, decision.getFinalAnswer());
                     state.complete(decision.getFinalAnswer());
                     return state;
                 }

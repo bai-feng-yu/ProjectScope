@@ -39,6 +39,16 @@ public class TaskService {
         return new CreateTaskResponse(taskId, TaskStatus.PENDING);
     }
 
+    @Transactional
+    public CreateTaskResponse submit(CreateTaskRequest request, String key) {
+        if (key == null) return submit(request); // Legacy clients remain compatible; the MVP client always sends a key.
+        Assert.hasText(request.task(), "task must not be blank");
+        String userId = TaskIdentity.current().userId();
+        String id = tasks.createOwnedOnce(request.task(), userId, key);
+        var run = tasks.findOwned(id, userId).orElseThrow();
+        return new CreateTaskResponse(id, run.status());
+    }
+
     @Transactional(readOnly = true)
     public TaskDetailResponse get(String taskId) {
         return TaskDetailResponse.from(requireTask(taskId));

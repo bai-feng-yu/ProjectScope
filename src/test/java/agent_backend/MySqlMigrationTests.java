@@ -182,9 +182,60 @@ class MySqlMigrationTests {
         return jdbc.queryForObject("SELECT last_event_seq FROM agent_task WHERE task_id=?", Long.class, run);
     }
 
+    @Test void idempotentRunSubmissionIsConcurrentScopedAndConflictChecked() throws Exception {
+        String user = id().replace("-", "") + id().replace("-", ""), key = id();
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var one = pool.submit(() -> tasks.createOwnedOnce("input", user, key));
+            var two = pool.submit(() -> tasks.createOwnedOnce("input", user, key));
+            String run = one.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(run, two.get(10, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, eventSequence(run));
+            assertEquals(run, tasks.createOwnedOnce("input", user, key));
+            var conflict = assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> tasks.createOwnedOnce("changed", user, key));
+            assertEquals(409, conflict.getStatusCode().value());
+            assertFalse(run.equals(tasks.createOwnedOnce("input", "b".repeat(64), key)));
+        }
+    }
+
+    @Test void failedIdempotentCreationDoesNotReserveKey() {
+        String user = "c".repeat(64), key = id();
+        jdbc.execute("CREATE TRIGGER reject_created BEFORE INSERT ON run_event FOR EACH ROW BEGIN "
+                + "IF NEW.event_type='run.created' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='forced'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.createOwnedOnce("input", user, key));
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM request_dedup WHERE user_id=? AND key_hash=?",
+                    Integer.class, user, agent_backend.task.RequestKeys.hash(key)));
+        } finally { jdbc.execute("DROP TRIGGER reject_created"); }
+        assertTrue(tasks.find(tasks.createOwnedOnce("input", user, key)).isPresent());
+    }
+
+    @Test void finalStepRunAttemptAndEventsCommitOrRollbackTogether() {
+        String run = id(), step = id();
+        tasks.create(run, "task");
+        var lease = tasks.start(new TaskLease(run, id()), 60000);
+        steps.create(lease, step, 1);
+        steps.saveResponse(lease, step, answerResponse());
+        long before = eventSequence(run);
+        jdbc.execute("CREATE TRIGGER reject_final BEFORE INSERT ON run_event FOR EACH ROW BEGIN "
+                + "IF NEW.run_id='" + run + "' AND NEW.event_type='run.completed' THEN "
+                + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='forced'; END IF; END");
+        try {
+            assertThrows(DataAccessException.class, () -> tasks.completeFinal(lease, step, "done"));
+            assertEquals(TaskStatus.RUNNING, tasks.find(run).orElseThrow().status());
+            assertEquals(StepStatus.RUNNING, steps.findByTask(run).getFirst().status());
+            assertEquals("RUNNING", jdbc.queryForObject("SELECT status FROM run_attempt WHERE run_id=?", String.class, run));
+            assertEquals(before, eventSequence(run));
+        } finally { jdbc.execute("DROP TRIGGER reject_final"); }
+        tasks.completeFinal(lease, step, "done");
+        assertEquals(TaskStatus.COMPLETED, tasks.find(run).orElseThrow().status());
+        assertEquals(StepStatus.COMPLETED, steps.findByTask(run).getFirst().status());
+        assertEquals(before + 3, eventSequence(run));
+    }
+
     @Test
     void bootRunsMigrationAndSecondMigrationDoesNotRecreateTables() {
-        assertEquals("6", flyway.info().current().getVersion().getVersion());
+        assertEquals("7", flyway.info().current().getVersion().getVersion());
         assertEquals(3, jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.tables
                 WHERE table_schema = DATABASE()

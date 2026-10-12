@@ -17,8 +17,9 @@ public class RunController {
     public record CreatedRun(String runId, TaskStatus status) {}
 
     @PostMapping
-    public ResponseEntity<CreatedRun> create(@Valid @RequestBody CreateTaskRequest request) {
-        var result = service.submit(request);
+    public ResponseEntity<CreatedRun> create(@Valid @RequestBody CreateTaskRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
+        var result = service.submit(request, key);
         return ResponseEntity.accepted().location(URI.create("/runs/" + result.taskId()))
                 .body(new CreatedRun(result.taskId(), result.status()));
     }

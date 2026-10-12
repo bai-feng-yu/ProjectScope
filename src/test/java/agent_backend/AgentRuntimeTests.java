@@ -212,8 +212,8 @@ class AgentRuntimeTests {
         order.verify(invocations).finish(any(), org.mockito.ArgumentMatchers.eq("inv-2"), any());
         order.verify(steps).complete(any(), org.mockito.ArgumentMatchers.eq(state.getSteps().getFirst().getStepId()));
         order.verify(llm).request(any());
-        order.verify(steps).complete(any(), any());
-        order.verify(tasks).complete(new TaskLease(state.getTaskId(), "test-worker"), "done");
+        order.verify(tasks).completeFinal(org.mockito.ArgumentMatchers.eq(new TaskLease(state.getTaskId(), "test-worker")),
+                any(), org.mockito.ArgumentMatchers.eq("done"));
         assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
     }
 
@@ -292,7 +292,8 @@ class AgentRuntimeTests {
         assertEquals("stored input", state.getTask());
         assertEquals(AgentState.AgentStateType.COMPLETED, state.getAgentStateType());
         org.mockito.Mockito.verify(tasks, org.mockito.Mockito.never()).create(any(), any());
-        org.mockito.Mockito.verify(tasks).complete(new TaskLease(taskId, "test-worker"), "done");
+        org.mockito.Mockito.verify(tasks).completeFinal(org.mockito.ArgumentMatchers.eq(new TaskLease(taskId, "test-worker")),
+                any(), org.mockito.ArgumentMatchers.eq("done"));
     }
 
     @Test

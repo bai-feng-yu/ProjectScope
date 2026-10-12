@@ -27,8 +27,9 @@ public class TaskControler {
     }
 
     @PostMapping 
-    public ResponseEntity<CreateTaskResponse> tasks(@Valid @RequestBody CreateTaskRequest request) {
-        var response = taskService.submit(request);
+    public ResponseEntity<CreateTaskResponse> tasks(@Valid @RequestBody CreateTaskRequest request,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "Idempotency-Key", required = false) String key) {
+        var response = taskService.submit(request, key);
         return ResponseEntity.accepted().location(URI.create("/tasks/" + response.taskId())).body(response);
     }
 

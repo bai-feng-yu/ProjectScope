@@ -51,6 +51,30 @@ public class JdbcTaskStore implements TaskStore {
     }
 
     @Override
+    @Transactional
+    public String createOwnedOnce(String input, String userId, String key) {
+        var keys = agent_backend.task.RequestKeys.class;
+        String keyHash = agent_backend.task.RequestKeys.hash(agent_backend.task.RequestKeys.validate(key));
+        String inputHash = agent_backend.task.RequestKeys.hash(input);
+        String id = java.util.UUID.randomUUID().toString();
+        // A duplicate INSERT waits for the first transaction before the row is read.
+        jdbc.update("""
+                INSERT IGNORE INTO request_dedup(user_id,operation,key_hash,request_hash,resource_id)
+                VALUES (?,'create-run',?,?,?)
+                """, userId, keyHash, inputHash, id);
+        var row = jdbc.queryForMap("""
+                SELECT request_hash,resource_id FROM request_dedup
+                WHERE user_id=? AND operation='create-run' AND key_hash=? FOR UPDATE
+                """, userId, keyHash);
+        if (!inputHash.equals(row.get("request_hash")))
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.CONFLICT, "Idempotency-Key used with different input");
+        String existing = (String) row.get("resource_id");
+        if (id.equals(existing)) createOwned(id, input, userId);
+        return existing;
+    }
+
+    @Override
     public Optional<String> findOwner(String taskId) {
         return jdbc.queryForList("SELECT user_id FROM agent_task WHERE task_id = ? AND user_id IS NOT NULL",
                 String.class, taskId).stream().findFirst();
@@ -109,6 +133,20 @@ public class JdbcTaskStore implements TaskStore {
                 """, answer, lease.taskId(), lease.taskId()), "complete task", lease.taskId());
         finishAttempt(lease.taskId(), lease.attemptId(), "SUCCEEDED", null);
         JdbcRunEvents.append(jdbc, lease.taskId(), "run.completed", lease.attemptId(), null, null, "COMPLETED");
+    }
+
+    @Override
+    @Transactional
+    public void completeFinal(TaskLease lease, String stepId, String answer) {
+        leases.lock(lease);
+        JdbcStoreSupport.requireOne(jdbc.update("""
+                UPDATE agent_step SET status='COMPLETED', finished_at=UTC_TIMESTAMP(6)
+                WHERE step_id=? AND task_id=? AND status='RUNNING' AND model_response IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM agent_tool_call WHERE step_id=?)
+                """, stepId, lease.taskId(), stepId), "complete final step", stepId);
+        JdbcRunEvents.append(jdbc, lease.taskId(), "step.completed", lease.attemptId(), stepId, null, "COMPLETED");
+        // This self-call intentionally shares the outer transaction: no partial final-step commit.
+        complete(lease, answer);
     }
 
     @Override
