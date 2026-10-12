@@ -29,4 +29,13 @@ the existing `feat:` / `fix:` / `test:` convention. See the lifecycle plan for s
 - Model I/O holds no database transaction. The minimal UI will be delivered with the research workflow.
 - Real MySQL tests cover isolation, idempotency, failed replies and stale pending turns.
 
+## M4 — Personal Memory
+
+- Best-effort JSON extraction creates at most three candidates from each new user message, with source IDs and FACT/PREFERENCE/INFERENCE labels.
+- Only explicitly confirmed memories enter cross-session context; same-topic conflicts require explicit replacement.
+- Corrections preserve version history; optimistic version checks reject stale writes. Deletion redacts every stored version of the topic.
+- A processed-source ledger prevents replay from recreating deleted memory. Disabling memory prevents extraction and retrieval; existing confirmed records are retained until explicitly deleted.
+- Retrieval uses topic matching plus recent confirmed memories (up to eight), not embeddings. User corrections take precedence over memory.
+- Extraction failure never rolls back a saved reply. No background extraction retries are promised.
+
 Other MVP packages remain pending until their implementation and verification are recorded here.

@@ -27,9 +27,11 @@ class PersonalMvpMySqlTests {
     @Autowired ConversationStore conversations;
     @Autowired ConversationService chat;
     @Autowired JdbcTemplate jdbc;
+    @Autowired MemoryStore memories;
+    @Autowired MemoryService memory;
     @MockitoBean LlmClient model;
     String user;
-    @BeforeEach void login() { user = TestIdentity.login("personal-alice").userId(); }
+    @BeforeEach void login() { user = TestIdentity.login("personal-alice-" + UUID.randomUUID()).userId(); }
     @AfterEach void logout() { TestIdentity.clear(); }
 
     @Test void conversationsAreOwnedAndRepliesAreIdempotent() {
@@ -41,7 +43,7 @@ class PersonalMvpMySqlTests {
         var result = chat.send(conversation, "first", "I work with Java");
         assertEquals(2, result.size());
         assertEquals(result, chat.send(conversation, "first", "I work with Java"));
-        verify(model, times(1)).completeText(anyString(), anyList());
+        verify(model, times(2)).completeText(anyString(), anyList()); // Reply + best-effort extraction, neither repeated.
         assertEquals(409, assertThrows(ResponseStatusException.class,
                 () -> chat.send(conversation, "first", "changed")).getStatusCode().value());
         String other = TestIdentity.login("personal-bob").userId();
@@ -69,5 +71,61 @@ class PersonalMvpMySqlTests {
         assertTrue(conversations.begin(user, conversation, "two", "next").created());
         assertEquals(409, assertThrows(ResponseStatusException.class,
                 () -> conversations.finish(user, conversation, first.message().messageId(), "late", null)).getStatusCode().value());
+    }
+
+    @Test void confirmedMemorySurvivesSessionsAndCorrectionDeletionAreVersioned() {
+        String conversation = conversations.create(user, "Career");
+        when(model.completeText(anyString(), anyList())).thenAnswer(call -> {
+            String system = call.getArgument(0);
+            if (system.startsWith("Extract")) return """
+                    {"memories":[{"topic":"career","kind":"PREFERENCE","content":"Wants remote Java work"}]}
+                    """;
+            return "Let's explore your preferences.";
+        });
+        chat.send(conversation, "first", "I want remote Java work");
+        var candidate = memories.list(user).getFirst();
+        assertEquals("CANDIDATE", candidate.status());
+        assertEquals("[]", memory.context(user, "career"));
+        var confirmed = memories.confirm(user, candidate.memoryId(), candidate.version(), false);
+        assertTrue(memory.context(user, "career").contains("remote Java"));
+        String next = conversations.create(user, "New session");
+        chat.send(next, "second", "What career options fit me?");
+        verify(model).completeText(contains("Wants remote Java work"), anyList());
+        var corrected = memories.correct(user, confirmed.memoryId(), confirmed.version(), "Now prefers hybrid work");
+        assertFalse(memory.context(user, "career").contains("remote Java"));
+        assertTrue(memory.context(user, "career").contains("hybrid"));
+        assertEquals(409, assertThrows(ResponseStatusException.class,
+                () -> memories.correct(user, confirmed.memoryId(), confirmed.version(), "stale")).getStatusCode().value());
+        String other = TestIdentity.login("memory-other").userId();
+        assertTrue(memories.list(other).isEmpty());
+        assertEquals(404, assertThrows(ResponseStatusException.class,
+                () -> memories.confirm(other, corrected.memoryId(), corrected.version(), true)).getStatusCode().value());
+        memories.delete(user, corrected.memoryId(), corrected.version());
+        assertTrue(memories.list(user).isEmpty());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM personal_memory WHERE user_id=? AND content<>''", Integer.class, user));
+        clearInvocations(model);
+        memory.extract(user, candidate.sourceMessageId(), "I want remote Java work");
+        verifyNoInteractions(model);
+    }
+
+    @Test void memorySettingsAndConflictingCandidatesNeverSilentlyOverwriteFacts() {
+        String conversation = conversations.create(user, "Conflict");
+        var turn = conversations.begin(user, conversation, "source", "My goal is Java work");
+        String source = turn.message().messageId();
+        assertTrue(memories.reserveSource(user, source));
+        memories.candidates(user, source, java.util.List.of(new MemoryStore.Candidate("career", "FACT", "Java")));
+        var first = memories.list(user).getFirst();
+        memories.confirm(user, first.memoryId(), first.version(), false);
+        memories.candidates(user, source, java.util.List.of(new MemoryStore.Candidate("career", "INFERENCE", "Python")));
+        var second = memories.list(user).stream().filter(m -> m.status().equals("CANDIDATE")).findFirst().orElseThrow();
+        assertEquals(409, assertThrows(ResponseStatusException.class,
+                () -> memories.confirm(user, second.memoryId(), second.version(), false)).getStatusCode().value());
+        memories.settings(user, false);
+        assertEquals("[]", memory.context(user, "career"));
+        assertTrue(memories.list(user).stream().noneMatch(m -> m.status().equals("CANDIDATE")));
+        memories.settings(user, true);
+        assertTrue(memory.context(user, "career").contains("Java"));
+        assertFalse(memory.context(user, "career").contains("Python"));
+        assertFalse(memories.reserveSource(user, source));
     }
 }
