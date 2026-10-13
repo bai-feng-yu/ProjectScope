@@ -28,7 +28,8 @@ public final class MemoryBaseline {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 4) throw new IllegalArgumentException("Usage: input.json output-directory local-properties max-model-requests");
+        if (args.length < 4 || args.length > 7) throw new IllegalArgumentException(
+                "Usage: input.json output-directory local-properties max-model-requests [parallelism] [timeout-seconds] [max-retries]");
         Path input = Path.of(args[0]), output = Path.of(args[1]);
         Files.createDirectories(output);
         if (Files.exists(output.resolve("run.json"))) throw new IllegalArgumentException("Use a new output directory; existing evidence is never overwritten");
@@ -41,7 +42,12 @@ public final class MemoryBaseline {
         if (!cases.isArray() || cases.isEmpty()) throw new IllegalArgumentException("Non-empty case array required");
         int maxCalls = Integer.parseInt(args[3]);
         if (maxCalls < 1) throw new IllegalArgumentException("Positive call limit required");
-        try (var proxy = new MeteredProvider(base, key, maxCalls, output.resolve("extraction-cache"));
+        int parallelism = args.length > 4 ? Integer.parseInt(args[4]) : 1;
+        int timeoutSeconds = args.length > 5 ? Integer.parseInt(args[5]) : 300;
+        int maxRetries = args.length > 6 ? Integer.parseInt(args[6]) : 2;
+        if (parallelism < 1 || parallelism > 16 || timeoutSeconds < 30 || timeoutSeconds > 1800 || maxRetries < 0 || maxRetries > 5)
+            throw new IllegalArgumentException("Unsafe evaluation transport settings");
+        try (var proxy = new MeteredProvider(base, key, maxCalls, timeoutSeconds, maxRetries, output.resolve("extraction-cache"));
              var mysql = new MySQLContainer("mysql:8.4")) {
             mysql.start();
             // Only model properties come from the local file. Never connect to its database or identity service.
@@ -51,11 +57,14 @@ public final class MemoryBaseline {
                     "--brave.enabled=false", "--debug=false", "--logging.level.root=WARN", "--logging.level.org.springframework=WARN", "--logging.level.agent_backend=WARN",
                     "--spring.datasource.url=" + mysql.getJdbcUrl(), "--spring.datasource.username=" + mysql.getUsername(),
                     "--spring.datasource.password=" + mysql.getPassword(), "--llm.base-url=" + proxy.address(),
-                    "--llm.api-key=local-metered-proxy", "--llm.model=" + model)) {
+                    "--llm.api-key=local-metered-proxy", "--llm.model=" + model,
+                    "--llm.http.response-timeout=" + (timeoutSeconds + 30) + "s")) {
                 var metadata = new LinkedHashMap<String,Object>();
                 metadata.put("startedAt", Instant.now().toString()); metadata.put("model", model);
                 metadata.put("inputSha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(input))));
                 metadata.put("cases", cases.size()); metadata.put("maxModelRequests", maxCalls);
+                metadata.put("parallelism", parallelism); metadata.put("providerTimeoutSeconds", timeoutSeconds);
+                metadata.put("maxRetriesPerCall", maxRetries);
                 metadata.put("protocol", "original-history-import/user-only-extraction/auto-confirm-replace/new-conversation-answer/v1");
                 metadata.put("extractionCache", "Identical extraction request bodies reuse the first successful response within this run; disk artifacts retained for audit");
                 metadata.put("limitations", List.of("test-only history import, not public HTTP ingestion", "source dates not passed to extraction",
@@ -66,7 +75,7 @@ public final class MemoryBaseline {
                 var store = app.getBean(MemoryStore.class);
                 var chat = app.getBean(ConversationService.class);
                 var jdbc = app.getBean(JdbcTemplate.class);
-                var pool = Executors.newFixedThreadPool(4);
+                var pool = Executors.newFixedThreadPool(parallelism);
                 var failedCases = new AtomicInteger();
                 try {
                     var work = new ArrayList<Future<?>>();
@@ -77,6 +86,8 @@ public final class MemoryBaseline {
                             var result = new LinkedHashMap<String,Object>();
                             result.put("question_id", item.path("id").asText()); result.put("category", item.path("category").asText());
                             long start = System.nanoTime();
+                            int caseAttempt = 0;
+                            while (++caseAttempt <= 2) {
                             try {
                                 var jwt = Jwt.withTokenValue("evaluation-only").header("alg", "none").issuer("urn:projectscope:isolated-eval")
                                         .subject(UUID.randomUUID().toString()).issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(86400)).build();
@@ -97,7 +108,10 @@ public final class MemoryBaseline {
                                                 source, user, conversation, role, turn.path("content").asText());
                                         sourceSessions.put(source, session.path("id").asText()); imported++;
                                         if (role.equals("USER")) {
+                                            int failuresBefore = proxy.terminalFailures.get();
                                             memory.extract(user, source, turn.path("content").asText()); extracted++;
+                                            if (proxy.terminalFailures.get() != failuresBefore)
+                                                throw new ProviderCaseException("Memory extraction provider call failed");
                                             // No gold labels or question are consulted when simulating confirmation.
                                             var candidates = jdbc.query("SELECT * FROM personal_memory WHERE user_id=? AND source_message_id=? AND status='CANDIDATE' ORDER BY updated_at,memory_id",
                                                     org.springframework.jdbc.core.DataClassRowMapper.newInstance(MemoryStore.Memory.class), user, source);
@@ -114,30 +128,52 @@ public final class MemoryBaseline {
                                 result.put("retrieved", retrieved);
                                 result.put("retrievedSessionIds", retrieved.stream().map(m -> sourceSessions.get(m.sourceMessageId())).filter(Objects::nonNull).distinct().toList());
                                 String conversation = conversations.create(user, "Benchmark question (no historical messages)");
+                                int failuresBeforeAnswer = proxy.terminalFailures.get();
                                 var answers = chat.send(conversation, UUID.randomUUID().toString(), prompt);
-                                var answer = answers.stream().filter(m -> m.role().equals("ASSISTANT")).findFirst().orElseThrow();
+                                var answer = answers.stream().filter(m -> m.role().equals("ASSISTANT")).findFirst()
+                                        .orElseThrow(() -> proxy.terminalFailures.get() != failuresBeforeAnswer
+                                                ? new ProviderCaseException("Answer provider call failed")
+                                                : new IllegalStateException("Answer was not produced"));
                                 result.put("hypothesis", answer.content());
                                 // Paired ablation uses an empty conversation and disables both retrieval and extraction.
                                 store.settings(user, false);
+                                int failuresBeforeControl = proxy.terminalFailures.get();
                                 var control = chat.send(conversations.create(user, "No-memory control"), UUID.randomUUID().toString(), prompt);
-                                result.put("noMemoryHypothesis", control.stream().filter(m -> m.role().equals("ASSISTANT")).findFirst().orElseThrow().content());
+                                result.put("noMemoryHypothesis", control.stream().filter(m -> m.role().equals("ASSISTANT")).findFirst()
+                                        .orElseThrow(() -> proxy.terminalFailures.get() != failuresBeforeControl
+                                                ? new ProviderCaseException("Control provider call failed")
+                                                : new IllegalStateException("Control answer was not produced")).content());
                                 result.put("status", "ANSWERED_UNSCORED");
+                                result.put("caseAttempts", caseAttempt);
+                                break;
                             } catch (Exception failure) {
+                                if (failure instanceof ProviderCaseException && caseAttempt < 2 && !proxy.exhausted()) {
+                                    result.clear();
+                                    result.put("question_id", item.path("id").asText()); result.put("category", item.path("category").asText());
+                                    try { Thread.sleep(30_000); }
+                                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); failure = interrupted; }
+                                    if (!(failure instanceof InterruptedException)) continue;
+                                }
                                 failedCases.incrementAndGet();
                                 result.put("status", "ERROR"); result.put("errorClass", failure.getClass().getSimpleName());
+                                result.put("errorCode", safeErrorCode(failure));
+                                result.put("caseAttempts", caseAttempt);
                             } finally {
                                 SecurityContextHolder.clearContext();
-                                result.put("elapsedMillis", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
-                                try { write(output.resolve(String.format("case-%03d.json", number)), result); }
-                                catch (IOException failure) { throw new UncheckedIOException(failure); }
-                                System.out.println("Case " + number + ": " + result.get("status"));
                             }
+                            break;
+                            }
+                            result.put("elapsedMillis", TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+                            try { write(output.resolve(String.format("case-%03d.json", number)), result); }
+                            catch (IOException failure) { throw new UncheckedIOException(failure); }
+                            System.out.println("Case " + number + ": " + result.get("status"));
                         }));
                     }
                     for (var future : work) future.get();
                 } finally { pool.shutdownNow(); }
                 metadata.put("finishedAt", Instant.now().toString()); metadata.put("providerRequests", proxy.requests.get());
                 metadata.put("providerErrors", proxy.errors.get());
+                metadata.put("providerTerminalFailures", proxy.terminalFailures.get());
                 metadata.put("extractionCacheHits", proxy.cacheHits.get());
                 metadata.put("invalidExtractionResponses", proxy.invalidExtractions.get());
                 metadata.put("responsesWithUsage", proxy.responsesWithUsage.get());
@@ -160,9 +196,22 @@ public final class MemoryBaseline {
 
     private static void write(Path path, Object value) throws IOException { Files.writeString(path, JSON.writeValueAsString(value)); }
 
-    /** Local forwarding meter: stops after repeated provider errors; no retries, credentials or bodies in logs. */
+    private static String safeErrorCode(Exception failure) {
+        String message = Objects.toString(failure.getMessage(), "");
+        if (message.contains("budget")) return "PROVIDER_BUDGET_EXHAUSTED";
+        if (message.contains("circuit")) return "PROVIDER_CIRCUIT_OPEN";
+        if (message.contains("provider call failed")) return "PROVIDER_CALL_FAILED";
+        return "CASE_EXECUTION_FAILED";
+    }
+
+    private static final class ProviderCaseException extends IllegalStateException {
+        ProviderCaseException(String message) { super(message); }
+    }
+
+    /** Local forwarding meter with bounded retries and sanitized diagnostics. */
     private static final class MeteredProvider implements AutoCloseable {
         final AtomicInteger requests = new AtomicInteger(), errors = new AtomicInteger();
+        final AtomicInteger terminalFailures = new AtomicInteger(), consecutiveFailures = new AtomicInteger();
         final AtomicInteger cacheHits = new AtomicInteger();
         final AtomicInteger invalidExtractions = new AtomicInteger(), responsesWithUsage = new AtomicInteger();
         final AtomicLong promptTokens = new AtomicLong(), completionTokens = new AtomicLong();
@@ -170,10 +219,12 @@ public final class MemoryBaseline {
         final HttpServer server;
         final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
         final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
-        final int limit;
-        MeteredProvider(String base, String key, int limit, Path cacheDirectory) throws IOException {
-            this.limit = limit;
+        final int limit, timeoutSeconds, maxRetries;
+        final Path errorLog;
+        MeteredProvider(String base, String key, int limit, int timeoutSeconds, int maxRetries, Path cacheDirectory) throws IOException {
+            this.limit = limit; this.timeoutSeconds = timeoutSeconds; this.maxRetries = maxRetries;
             Files.createDirectories(cacheDirectory);
+            errorLog = cacheDirectory.getParent().resolve("provider-errors.jsonl");
             URI target = URI.create(base.replaceAll("/+$", "") + "/chat/completions");
             if (!target.getScheme().equals("https") && !Set.of("127.0.0.1", "localhost").contains(target.getHost()))
                 throw new IllegalArgumentException("Remote model endpoint must use HTTPS");
@@ -189,21 +240,16 @@ public final class MemoryBaseline {
                     var prior = cacheKey == null ? null : cache.putIfAbsent(cacheKey, pending);
                     if (prior != null) {
                         cacheHits.incrementAndGet();
-                        byte[] cached = prior.get(150, TimeUnit.SECONDS);
+                        byte[] cached = prior.get((long) timeoutSeconds * (maxRetries + 1) + 60, TimeUnit.SECONDS);
                         exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
                         exchange.sendResponseHeaders(200, cached.length); exchange.getResponseBody().write(cached); return;
                     }
                     try {
-                    if (exhausted()) { exchange.sendResponseHeaders(429, -1); return; }
-                    int number = requests.incrementAndGet();
-                    if (number > limit) { exchange.sendResponseHeaders(429, -1); return; }
-                    if (number % 25 == 0) System.out.println("Provider requests started: " + number);
-                    var request = HttpRequest.newBuilder(target).timeout(Duration.ofSeconds(120))
-                            .header("Authorization", "Bearer " + key).header("Content-Type", "application/json")
-                            .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
-                    var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
-                    if (response.statusCode() >= 400) errors.incrementAndGet();
+                    if (exhausted()) { replyJson(exchange, 503, "provider_circuit_open"); return; }
+                    HttpResponse<byte[]> response = forward(target, key, body);
+                    if (response == null) { replyJson(exchange, 502, "provider_transport_failure"); return; }
                     if (response.statusCode() == 200) {
+                        consecutiveFailures.set(0);
                         try {
                             var responseJson = JSON.readTree(response.body());
                             var usage = responseJson.path("usage");
@@ -228,11 +274,76 @@ public final class MemoryBaseline {
                     } finally {
                         if (!pending.isDone()) pending.completeExceptionally(new IOException("Extraction request unavailable"));
                     }
-                } catch (Exception failure) { errors.incrementAndGet(); }
+                } catch (Exception failure) {
+                    errors.incrementAndGet(); terminalFailures.incrementAndGet(); consecutiveFailures.incrementAndGet();
+                    diagnostic(0, null, failure, false);
+                    try { replyJson(exchange, 502, "local_proxy_failure"); } catch (Exception ignored) { }
+                }
             });
             server.start();
         }
-        boolean exhausted() { return requests.get() >= limit || errors.get() >= 3; }
+
+        private HttpResponse<byte[]> forward(URI target, String key, byte[] body) {
+            for (int attempt = 0; attempt <= maxRetries; attempt++) {
+                if (requests.get() >= limit) return terminal(null, null, attempt, false);
+                int number = requests.incrementAndGet();
+                if (number % 25 == 0) System.out.println("Provider requests started: " + number);
+                try {
+                    var request = HttpRequest.newBuilder(target).timeout(Duration.ofSeconds(timeoutSeconds))
+                            .header("Authorization", "Bearer " + key).header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
+                    var response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
+                    if (response.statusCode() < 400) return response;
+                    errors.incrementAndGet();
+                    boolean retryable = Set.of(408, 429, 500, 502, 503, 504).contains(response.statusCode());
+                    diagnostic(number, response.statusCode(), null, retryable && attempt < maxRetries);
+                    if (!retryable || attempt == maxRetries) return terminal(response, null, attempt, retryable);
+                    pause(attempt, response.headers().firstValue("Retry-After").orElse(null));
+                } catch (Exception failure) {
+                    errors.incrementAndGet();
+                    diagnostic(number, null, failure, attempt < maxRetries);
+                    if (attempt == maxRetries) return terminal(null, failure, attempt, true);
+                    pause(attempt, null);
+                }
+            }
+            return null;
+        }
+
+        private HttpResponse<byte[]> terminal(HttpResponse<byte[]> response, Exception failure, int attempt, boolean retryable) {
+            terminalFailures.incrementAndGet(); consecutiveFailures.incrementAndGet();
+            return response;
+        }
+
+        private void pause(int attempt, String retryAfter) {
+            long seconds = Math.min(30, 1L << Math.min(attempt, 4));
+            if (retryAfter != null) try { seconds = Math.min(30, Math.max(seconds, Long.parseLong(retryAfter))); }
+            catch (NumberFormatException ignored) { }
+            try { Thread.sleep(seconds * 1000); }
+            catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new CancellationException("Provider retry interrupted");
+            }
+        }
+
+        private synchronized void diagnostic(int requestNumber, Integer status, Exception failure, boolean willRetry) {
+            try {
+                var row = new LinkedHashMap<String,Object>();
+                row.put("at", Instant.now().toString()); row.put("requestNumber", requestNumber);
+                if (status != null) row.put("httpStatus", status);
+                if (failure != null) row.put("exception", failure.getClass().getSimpleName());
+                row.put("willRetry", willRetry);
+                Files.writeString(errorLog, JSON.writeValueAsString(row) + System.lineSeparator(),
+                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            } catch (Exception ignored) { }
+        }
+
+        private void replyJson(com.sun.net.httpserver.HttpExchange exchange, int status, String code) throws IOException {
+            byte[] bytes = JSON.writeValueAsBytes(Map.of("error", Map.of("message", code)));
+            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+            exchange.sendResponseHeaders(status, bytes.length); exchange.getResponseBody().write(bytes);
+        }
+
+        boolean exhausted() { return requests.get() >= limit || consecutiveFailures.get() >= 5; }
         String address() { return "http://127.0.0.1:" + server.getAddress().getPort(); }
         public void close() { server.stop(0); executor.shutdownNow(); client.close(); }
     }
