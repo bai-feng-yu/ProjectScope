@@ -26,6 +26,10 @@ def fetch(url, destination, expected_size=None, headers=None):
                 with urllib.request.urlopen(request, timeout=60) as response, partial.open('wb') as output:
                     if headers and 'Range' in headers and response.status != 206:
                         raise ValueError('Server did not honor byte range')
+                    if headers and 'Range' in headers:
+                        expected_range = headers['Range'].replace('bytes=', 'bytes ') + '/'
+                        if not response.headers.get('Content-Range', '').startswith(expected_range):
+                            raise ValueError('Server returned a different byte range')
                     advertised = response.headers.get('Content-Length')
                     while chunk := response.read(1024 * 1024):
                         output.write(chunk)
@@ -91,10 +95,8 @@ def select(rows, count, seed):
 
 
 def prepare_longmem(count=56, seed=20261013):
-    api = 'https://huggingface.co/api/datasets/xiaowu0162/longmemeval-cleaned'
-    metadata = CACHE / 'longmemeval-revision.json'
-    fetch(api, metadata)
-    revision = json.loads(metadata.read_text(encoding='utf-8'))['sha']
+    revision = '98d7416c24c778c2fee6e6f3006e7a073259d48f'
+    CACHE.mkdir(parents=True, exist_ok=True)
     url = f'https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/{revision}/longmemeval_s_cleaned.json'
     source = fetch_large(url, CACHE / f'longmemeval-s-{revision}.json', 277383467)
     raw = json.loads(source.read_text(encoding='utf-8'))
@@ -142,8 +144,7 @@ def save_bundle(name, inputs, gold, provenance):
 
 
 def prepare_persona(count, seed):
-    metadata = fetch('https://huggingface.co/api/datasets/bowen-upenn/PersonaMem', CACHE / 'personamem-revision.json')
-    revision = json.loads(metadata.read_text(encoding='utf-8'))['sha']
+    revision = 'a8076d5608c93ba2a28983cd78aa99b01a163ae7'
     base = f'https://huggingface.co/datasets/bowen-upenn/PersonaMem/resolve/{revision}/'
     questions = fetch(base + 'questions_32k.csv', CACHE / f'persona-{revision}.csv')
     contexts = fetch(base + 'shared_contexts_32k.jsonl', CACHE / f'persona-{revision}.jsonl')
@@ -176,8 +177,7 @@ def prepare_persona(count, seed):
 
 
 def prepare_memora():
-    metadata = fetch('https://api.github.com/repos/geniesinc/Memora/commits/main', CACHE / 'memora-revision.json')
-    revision = json.loads(metadata.read_text(encoding='utf-8'))['sha']
+    revision = 'a6493188efc836d6511ed5e4163fe3ba87da30ff'
     path = 'data/weekly/software_engineer'
     base = f'https://raw.githubusercontent.com/geniesinc/Memora/{revision}/{path}/'
     directory = CACHE / f'memora-{revision}'

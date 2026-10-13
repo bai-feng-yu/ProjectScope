@@ -1,0 +1,18 @@
+[
+  {
+    "id": "projectscope-smoke-not-a-benchmark",
+    "category": "synthetic-plumbing-check",
+    "question": "What kind of Java work do I prefer?",
+    "questionDate": "2026-10-13",
+    "sessions": [
+      {
+        "id": "intro",
+        "date": "2026-10-01",
+        "turns": [
+          {"role": "user", "content": "I am a Java backend engineer. I prefer fully remote work and want to build personal AI agents."},
+          {"role": "assistant", "content": "Understood. We can consider remote Java backend opportunities."}
+        ]
+      }
+    ]
+  }
+]
