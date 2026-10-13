@@ -7,3 +7,5 @@ target
 .vscode
 docs
 scripts
+.local-browser
+tools
