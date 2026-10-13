@@ -8,4 +8,5 @@ target
 docs
 scripts
 .local-browser
+.memory-eval
 tools

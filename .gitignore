@@ -39,3 +39,5 @@ src/main/resources/application-local.properties
 .env.*
 backups/
 .local-browser/
+.memory-eval/
+**/__pycache__/
